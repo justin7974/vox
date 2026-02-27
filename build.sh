@@ -16,8 +16,11 @@ rm -rf "$BUILD_DIR"
 mkdir -p "$APP_DIR/Contents/MacOS"
 mkdir -p "$APP_DIR/Contents/Resources"
 
-# Copy Info.plist
+# Copy Info.plist and app icon
 cp "$SCRIPT_DIR/Info.plist" "$APP_DIR/Contents/"
+if [ -f "$SCRIPT_DIR/AppIcon.icns" ]; then
+    cp "$SCRIPT_DIR/AppIcon.icns" "$APP_DIR/Contents/Resources/"
+fi
 
 # Compile Swift files
 swiftc -O \
@@ -40,6 +43,13 @@ else
     echo "   Without signing, macOS will reset permissions on each rebuild."
 fi
 
+# Install to /Applications
+INSTALL_DIR="/Applications/$APP_NAME.app"
+if [ -d "$INSTALL_DIR" ]; then
+    rm -rf "$INSTALL_DIR"
+fi
+cp -r "$APP_DIR" /Applications/
+echo "   Installed to /Applications/$APP_NAME.app"
+
 echo ""
-echo "To run:     open $APP_DIR"
-echo "To install: cp -r $APP_DIR ~/Applications/"
+echo "To run: open /Applications/$APP_NAME.app"

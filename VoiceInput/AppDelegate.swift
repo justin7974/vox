@@ -15,6 +15,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private var state: AppState = .idle
     private let recorder = AudioRecorder()
+    private let overlay = StatusOverlay()
     private var hotKeyRef: EventHotKeyRef?
     private var setupWindow: SetupWindow?
 
@@ -82,7 +83,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         updateStatusIcon()
 
         let menu = NSMenu()
-        menu.addItem(NSMenuItem(title: "VoiceInput v1.2", action: nil, keyEquivalent: ""))
+        menu.addItem(NSMenuItem(title: "VoiceInput v1.3", action: nil, keyEquivalent: ""))
         menu.addItem(NSMenuItem.separator())
         menu.addItem(NSMenuItem(title: "Hotkey: Ctrl+`", action: nil, keyEquivalent: ""))
         menu.addItem(NSMenuItem.separator())
@@ -100,6 +101,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         case .recording:  statusItem.button?.title = "🔴"
         case .processing: statusItem.button?.title = "⏳"
         }
+        overlay.show(state: state)
     }
 
     // MARK: - Menu Actions
