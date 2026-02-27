@@ -1,0 +1,57 @@
+{
+  "asr": "qwen",
+  "qwen-asr": {
+    "apiKey": "sk-your-dashscope-api-key"
+  },
+  "provider": "kimi",
+  "userContext": "Describe your domain here so the LLM can better correct ASR errors. Example: VC investor working with AI/LLM products, investment terms, dev tools.",
+
+  "kimi": {
+    "baseURL": "https://api.kimi.com/coding/v1/messages",
+    "apiKey": "sk-your-kimi-api-key",
+    "model": "kimi-k2.5",
+    "format": "anthropic"
+  },
+  "minimax": {
+    "baseURL": "https://api.minimaxi.com/anthropic/v1/messages",
+    "apiKey": "your-minimax-api-key",
+    "model": "MiniMax-M2.5",
+    "format": "anthropic"
+  },
+  "minimax-global": {
+    "baseURL": "https://api.minimax.io/anthropic/v1/messages",
+    "apiKey": "your-minimax-api-key",
+    "model": "MiniMax-M2.5",
+    "format": "anthropic"
+  },
+  "moonshot": {
+    "baseURL": "https://api.moonshot.cn/anthropic/v1/messages",
+    "apiKey": "sk-your-moonshot-api-key",
+    "model": "moonshot-v1-auto",
+    "format": "anthropic"
+  },
+  "glm": {
+    "baseURL": "https://open.bigmodel.cn/api/anthropic/v1/messages",
+    "apiKey": "your-glm-api-key",
+    "model": "glm-4-plus",
+    "format": "anthropic"
+  },
+  "glm-global": {
+    "baseURL": "https://api.z.ai/api/anthropic/v1/messages",
+    "apiKey": "your-glm-api-key",
+    "model": "glm-4-plus",
+    "format": "anthropic"
+  },
+  "deepseek": {
+    "baseURL": "https://api.deepseek.com/chat/completions",
+    "apiKey": "sk-your-deepseek-api-key",
+    "model": "deepseek-chat",
+    "format": "openai"
+  },
+  "openrouter": {
+    "baseURL": "https://openrouter.ai/api/v1/chat/completions",
+    "apiKey": "sk-or-your-openrouter-api-key",
+    "model": "anthropic/claude-haiku",
+    "format": "openai"
+  }
+}
