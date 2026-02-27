@@ -169,6 +169,7 @@ enum PostProcessor {
             body = [
                 "model": config.model,
                 "max_tokens": 2048,
+                "enable_thinking": false,  // Disable thinking for Qwen 3.5+ models (26s → 1s)
                 "messages": [
                     ["role": "system", "content": finalPrompt],
                     ["role": "user", "content": rawText]
