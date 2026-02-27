@@ -2,10 +2,10 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-APP_NAME="VoiceInput"
+APP_NAME="Vox"
 BUILD_DIR="$SCRIPT_DIR/build"
 APP_DIR="$BUILD_DIR/$APP_NAME.app"
-CERT_NAME="VoiceInput Dev"
+CERT_NAME="Vox Dev"
 
 echo "Building $APP_NAME..."
 
@@ -27,8 +27,8 @@ swiftc -O \
     -framework Cocoa \
     -framework AVFoundation \
     -framework Carbon \
-    -module-name VoiceInput \
-    "$SCRIPT_DIR/VoiceInput/"*.swift \
+    -module-name Vox \
+    "$SCRIPT_DIR/Vox/"*.swift \
     -o "$APP_DIR/Contents/MacOS/$APP_NAME"
 
 # Code signing (preserves TCC permissions across rebuilds)

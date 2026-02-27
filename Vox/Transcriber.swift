@@ -32,10 +32,10 @@ enum Transcriber {
     static func transcribe(audioFile: URL) -> String {
         let config = loadASRConfig()
         if config.provider == "qwen" {
-            NSLog("VoiceInput: Using Qwen ASR")
+            NSLog("Vox: Using Qwen ASR")
             return transcribeWithQwen(audioFile: audioFile, apiKey: config.apiKey)
         } else {
-            NSLog("VoiceInput: Using local Whisper")
+            NSLog("Vox: Using local Whisper")
             return transcribeWithWhisper(audioFile: audioFile)
         }
     }
@@ -44,7 +44,7 @@ enum Transcriber {
 
     private static func transcribeWithQwen(audioFile: URL, apiKey: String) -> String {
         guard let audioData = try? Data(contentsOf: audioFile) else {
-            NSLog("VoiceInput: Failed to read audio file")
+            NSLog("Vox: Failed to read audio file")
             return ""
         }
 
@@ -92,7 +92,7 @@ enum Transcriber {
         ]
 
         guard let httpBody = try? JSONSerialization.data(withJSONObject: body) else {
-            NSLog("VoiceInput: Failed to serialize Qwen ASR request")
+            NSLog("Vox: Failed to serialize Qwen ASR request")
             return ""
         }
         request.httpBody = httpBody
@@ -104,37 +104,37 @@ enum Transcriber {
             defer { semaphore.signal() }
 
             if let error = error {
-                NSLog("VoiceInput: Qwen ASR error: \(error.localizedDescription)")
+                NSLog("Vox: Qwen ASR error: \(error.localizedDescription)")
                 DispatchQueue.main.async {
-                    AppDelegate.showNotification(title: "VoiceInput", message: "ASR network error: \(error.localizedDescription)")
+                    AppDelegate.showNotification(title: "Vox", message: "ASR network error: \(error.localizedDescription)")
                 }
                 return
             }
 
             if let httpResponse = response as? HTTPURLResponse {
-                NSLog("VoiceInput: Qwen ASR HTTP status: \(httpResponse.statusCode)")
+                NSLog("Vox: Qwen ASR HTTP status: \(httpResponse.statusCode)")
             }
 
             guard let data = data else {
-                NSLog("VoiceInput: Qwen ASR no response data")
+                NSLog("Vox: Qwen ASR no response data")
                 return
             }
 
             let rawResponse = String(data: data, encoding: .utf8) ?? "???"
-            NSLog("VoiceInput: Qwen ASR raw response: \(String(rawResponse.prefix(500)))")
+            NSLog("Vox: Qwen ASR raw response: \(String(rawResponse.prefix(500)))")
 
             guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                NSLog("VoiceInput: Qwen ASR failed to parse JSON")
+                NSLog("Vox: Qwen ASR failed to parse JSON")
                 return
             }
 
             // Check for error
             if let errorInfo = json["error"] as? [String: Any],
                let message = errorInfo["message"] as? String {
-                NSLog("VoiceInput: Qwen ASR API error: \(message)")
+                NSLog("Vox: Qwen ASR API error: \(message)")
                 let shortMsg = message.contains("invalid_api_key") ? "Invalid API key. Check Settings." : "ASR API error."
                 DispatchQueue.main.async {
-                    AppDelegate.showNotification(title: "VoiceInput", message: shortMsg)
+                    AppDelegate.showNotification(title: "Vox", message: shortMsg)
                 }
                 return
             }
@@ -144,7 +144,7 @@ enum Transcriber {
                let message = choices.first?["message"] as? [String: Any],
                let content = message["content"] as? String {
                 result = content.trimmingCharacters(in: .whitespacesAndNewlines)
-                NSLog("VoiceInput: Qwen ASR result: [\(result)]")
+                NSLog("Vox: Qwen ASR result: [\(result)]")
             }
         }
 
@@ -152,7 +152,7 @@ enum Transcriber {
         semaphore.wait()
 
         if isHallucination(result) {
-            NSLog("VoiceInput: Filtered hallucination: \(result)")
+            NSLog("Vox: Filtered hallucination: \(result)")
             return ""
         }
 
@@ -180,7 +180,7 @@ enum Transcriber {
             try process.run()
             process.waitUntilExit()
         } catch {
-            NSLog("VoiceInput: Whisper failed: \(error)")
+            NSLog("Vox: Whisper failed: \(error)")
             return ""
         }
 
@@ -216,7 +216,7 @@ enum Transcriber {
         let result = textParts.joined(separator: "")
 
         if isHallucination(result) {
-            NSLog("VoiceInput: Filtered hallucination: \(result)")
+            NSLog("Vox: Filtered hallucination: \(result)")
             return ""
         }
 

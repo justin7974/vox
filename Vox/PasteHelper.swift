@@ -5,7 +5,7 @@ enum PasteHelper {
         let logPath = NSHomeDirectory() + "/.voiceinput/debug.log"
         let ts = ISO8601DateFormatter().string(from: Date())
         let line = "[PH \(ts)] \(msg)\n"
-        NSLog("VoiceInput: \(msg)")
+        NSLog("Vox: \(msg)")
         if let data = line.data(using: .utf8) {
             if FileManager.default.fileExists(atPath: logPath) {
                 if let fh = FileHandle(forWritingAtPath: logPath) {

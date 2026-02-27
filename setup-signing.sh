@@ -1,13 +1,13 @@
 #!/bin/bash
 #
-# One-time setup: create a local code signing certificate for VoiceInput.
+# One-time setup: create a local code signing certificate for Vox.
 # This ensures TCC permissions (microphone, accessibility) persist across rebuilds.
 #
 # Usage: ./setup-signing.sh
 #
 set -e
 
-CERT_NAME="VoiceInput Dev"
+CERT_NAME="Vox Dev"
 KEYCHAIN="$HOME/Library/Keychains/login.keychain-db"
 TMPDIR_CERT=$(mktemp -d)
 
@@ -49,7 +49,7 @@ openssl pkcs12 -export \
     -out "$TMPDIR_CERT/cert.p12" \
     -inkey "$TMPDIR_CERT/key.pem" \
     -in "$TMPDIR_CERT/cert.pem" \
-    -passout pass:VoiceInputDev \
+    -passout pass:VoxDev \
     -legacy \
     2>/dev/null
 
@@ -57,7 +57,7 @@ openssl pkcs12 -export \
 security import "$TMPDIR_CERT/cert.p12" \
     -k "$KEYCHAIN" \
     -T /usr/bin/codesign \
-    -P "VoiceInputDev"
+    -P "VoxDev"
 
 # Trust the certificate for code signing
 security add-trusted-cert -d -r trustRoot -p codeSign \

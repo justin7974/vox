@@ -10,7 +10,7 @@ class AudioRecorder {
 
     func start() {
         let timestamp = Int(Date().timeIntervalSince1970)
-        let url = URL(fileURLWithPath: "/tmp/voice-input-\(timestamp).wav")
+        let url = URL(fileURLWithPath: "/tmp/vox-\(timestamp).wav")
         currentURL = url
         peakPower = -160.0
 
@@ -40,7 +40,7 @@ class AudioRecorder {
                 self?.onAudioLevel?(power)
             }
         } catch {
-            NSLog("VoiceInput: Recording failed: \(error)")
+            NSLog("Vox: Recording failed: \(error)")
         }
     }
 

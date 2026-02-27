@@ -8,7 +8,7 @@ enum PostProcessor {
         let logPath = NSHomeDirectory() + "/.voiceinput/debug.log"
         let ts = ISO8601DateFormatter().string(from: Date())
         let line = "[PP \(ts)] \(msg)\n"
-        NSLog("VoiceInput: \(msg)")
+        NSLog("Vox: \(msg)")
         if let data = line.data(using: .utf8) {
             if FileManager.default.fileExists(atPath: logPath) {
                 if let fh = FileHandle(forWritingAtPath: logPath) {
@@ -91,7 +91,7 @@ enum PostProcessor {
               let baseURL = providerConfig["baseURL"] as? String,
               let apiKey = providerConfig["apiKey"] as? String,
               let model = providerConfig["model"] as? String else {
-            NSLog("VoiceInput: Failed to load config from ~/.voiceinput/config.json")
+            NSLog("Vox: Failed to load config from ~/.voiceinput/config.json")
             return nil
         }
 
@@ -127,7 +127,7 @@ enum PostProcessor {
         if result.isEmpty {
             debugLog("LLM failed, returning raw text")
             DispatchQueue.main.async {
-                AppDelegate.showNotification(title: "VoiceInput", message: "LLM post-processing failed. Using raw transcription.")
+                AppDelegate.showNotification(title: "Vox", message: "LLM post-processing failed. Using raw transcription.")
             }
             return rawText
         }
