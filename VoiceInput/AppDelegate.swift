@@ -18,11 +18,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private let overlay = StatusOverlay()
     private var hotKeyRef: EventHotKeyRef?
     private var setupWindow: SetupWindow?
+    private var hotkeyMenuItem: NSMenuItem?
+    private(set) var hotkeyMode: String = "toggle" // "toggle" or "hold"
+    private(set) var hotkeyKeyCode: UInt32 = UInt32(kVK_ANSI_Grave)
+    private(set) var hotkeyModifiers: UInt32 = UInt32(controlKey)
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         AppDelegate.shared = self
         setupEditMenu()
         setupStatusBar()
+        loadHotkeyMode()
         registerHotKey()
 
         // Check accessibility for auto-paste (Cmd+V simulation)
@@ -30,7 +35,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let options = [key: true] as CFDictionary
         let trusted = AXIsProcessTrustedWithOptions(options)
         if !trusted {
-            NSLog("VoiceInput: Accessibility permission needed for auto-paste. Granted via System Settings.")
+            NSLog("Vox: Accessibility permission needed for auto-paste. Granted via System Settings.")
         }
 
         // Request notification permission
@@ -42,19 +47,48 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    // MARK: - Config check
+    // MARK: - Config
 
     private func configExists() -> Bool {
         let configPath = NSHomeDirectory() + "/.voiceinput/config.json"
         return FileManager.default.fileExists(atPath: configPath)
     }
 
+    func loadHotkeyMode() {
+        let configPath = NSHomeDirectory() + "/.voiceinput/config.json"
+        if let data = FileManager.default.contents(atPath: configPath),
+           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            if let mode = json["hotkeyMode"] as? String {
+                hotkeyMode = mode
+            }
+            if let keyCode = json["hotkeyKeyCode"] as? Int {
+                hotkeyKeyCode = UInt32(keyCode)
+            }
+            if let modifiers = json["hotkeyModifiers"] as? Int {
+                hotkeyModifiers = UInt32(modifiers)
+            }
+            NSLog("Vox: Hotkey mode = \(hotkeyMode), key = \(HotkeyRecorderView.hotkeyString(keyCode: hotkeyKeyCode, modifiers: hotkeyModifiers))")
+        }
+    }
+
+    func reloadHotkey() {
+        if let ref = hotKeyRef {
+            UnregisterEventHotKey(ref)
+            hotKeyRef = nil
+        }
+        loadHotkeyMode()
+        registerHotKey()
+        hotkeyMenuItem?.title = "Hotkey: \(HotkeyRecorderView.hotkeyString(keyCode: hotkeyKeyCode, modifiers: hotkeyModifiers))"
+    }
+
     // MARK: - Setup
 
     func showSetup() {
+        guard setupWindow == nil else { return }
         setupWindow = SetupWindow()
         setupWindow?.show { [weak self] in
             self?.setupWindow = nil
+            self?.reloadHotkey()
         }
     }
 
@@ -79,13 +113,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Status Bar
 
     private func setupStatusBar() {
-        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
-        updateStatusIcon()
+        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+        statusItem.button?.image = makeMenuBarIcon()
+        statusItem.button?.imagePosition = .imageOnly
 
         let menu = NSMenu()
-        menu.addItem(NSMenuItem(title: "VoiceInput v1.3", action: nil, keyEquivalent: ""))
+        menu.addItem(NSMenuItem(title: "Vox v2.0", action: nil, keyEquivalent: ""))
         menu.addItem(NSMenuItem.separator())
-        menu.addItem(NSMenuItem(title: "Hotkey: Ctrl+`", action: nil, keyEquivalent: ""))
+        let hkItem = NSMenuItem(title: "Hotkey: \(HotkeyRecorderView.hotkeyString(keyCode: hotkeyKeyCode, modifiers: hotkeyModifiers))", action: nil, keyEquivalent: "")
+        hotkeyMenuItem = hkItem
+        menu.addItem(hkItem)
         menu.addItem(NSMenuItem.separator())
         menu.addItem(NSMenuItem(title: "Settings...", action: #selector(openSettings), keyEquivalent: ","))
         menu.addItem(NSMenuItem(title: "Open Config File", action: #selector(openConfigFile), keyEquivalent: ""))
@@ -96,12 +133,57 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func updateStatusIcon() {
-        switch state {
-        case .idle:       statusItem.button?.title = "🎙️"
-        case .recording:  statusItem.button?.title = "🔴"
-        case .processing: statusItem.button?.title = "⏳"
-        }
         overlay.show(state: state)
+    }
+
+    /// Monochrome template microphone icon for the menubar
+    private func makeMenuBarIcon() -> NSImage {
+        let size = NSSize(width: 16, height: 18)
+        let image = NSImage(size: size, flipped: false) { rect in
+            NSColor.black.setFill()
+            NSColor.black.setStroke()
+
+            let cx = rect.width / 2
+
+            // Mic capsule
+            let micW: CGFloat = 5.5
+            let micH: CGFloat = 8.0
+            let micBottom: CGFloat = 8.5
+            let micRect = NSRect(x: cx - micW / 2, y: micBottom, width: micW, height: micH)
+            NSBezierPath(roundedRect: micRect, xRadius: micW / 2, yRadius: micW / 2).fill()
+
+            // Cradle U-arc
+            let cradle = NSBezierPath()
+            cradle.lineWidth = 1.3
+            cradle.lineCapStyle = .round
+            let cradleR: CGFloat = 5.0
+            let cradleCenterY: CGFloat = 10.5
+            cradle.appendArc(
+                withCenter: NSPoint(x: cx, y: cradleCenterY),
+                radius: cradleR, startAngle: 150, endAngle: 30, clockwise: false
+            )
+            cradle.stroke()
+
+            // Stand
+            let standTop = cradleCenterY - cradleR
+            let standBottom: CGFloat = 2.5
+            let stand = NSBezierPath()
+            stand.lineWidth = 1.3; stand.lineCapStyle = .round
+            stand.move(to: NSPoint(x: cx, y: standTop))
+            stand.line(to: NSPoint(x: cx, y: standBottom))
+            stand.stroke()
+
+            // Base
+            let base = NSBezierPath()
+            base.lineWidth = 1.3; base.lineCapStyle = .round
+            base.move(to: NSPoint(x: cx - 3, y: standBottom))
+            base.line(to: NSPoint(x: cx + 3, y: standBottom))
+            base.stroke()
+
+            return true
+        }
+        image.isTemplate = true
+        return image
     }
 
     // MARK: - Menu Actions
@@ -143,44 +225,69 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         hotKeyID.signature = OSType(0x56495054) // "VIPT"
         hotKeyID.id = 1
 
-        var eventType = EventTypeSpec(
-            eventClass: OSType(kEventClassKeyboard),
-            eventKind: UInt32(kEventHotKeyPressed)
-        )
+        // Register for both press and release events
+        var eventTypes = [
+            EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyPressed)),
+            EventTypeSpec(eventClass: OSType(kEventClassKeyboard), eventKind: UInt32(kEventHotKeyReleased)),
+        ]
 
         InstallEventHandler(
             GetApplicationEventTarget(),
             hotKeyHandler,
-            1,
-            &eventType,
+            2,
+            &eventTypes,
             nil,
             nil
         )
 
-        // Ctrl + ` (grave accent, keycode 0x32)
         let status = RegisterEventHotKey(
-            UInt32(kVK_ANSI_Grave),
-            UInt32(controlKey),
+            hotkeyKeyCode,
+            hotkeyModifiers,
             hotKeyID,
             GetApplicationEventTarget(),
             0,
             &hotKeyRef
         )
 
+        let hotkeyStr = HotkeyRecorderView.hotkeyString(keyCode: hotkeyKeyCode, modifiers: hotkeyModifiers)
         if status != noErr {
-            NSLog("VoiceInput: Failed to register hotkey Ctrl+` (status: \(status))")
+            NSLog("Vox: Failed to register hotkey \(hotkeyStr) (status: \(status))")
         } else {
-            NSLog("VoiceInput: Hotkey Ctrl+` registered")
+            NSLog("Vox: Hotkey \(hotkeyStr) registered")
         }
     }
 
-    // MARK: - Recording Toggle
+    // MARK: - Hotkey Handlers
+
+    func hotKeyPressed() {
+        switch hotkeyMode {
+        case "hold":
+            if state == .idle {
+                if !configExists() {
+                    AppDelegate.showNotification(title: "Vox", message: "Please configure your API keys first.")
+                    showSetup()
+                    return
+                }
+                startRecording()
+            }
+        default: // toggle
+            toggleRecording()
+        }
+    }
+
+    func hotKeyReleased() {
+        if hotkeyMode == "hold" && state == .recording {
+            stopAndProcess()
+        }
+    }
+
+    // MARK: - Recording
 
     func toggleRecording() {
         switch state {
         case .idle:
             if !configExists() {
-                AppDelegate.showNotification(title: "VoiceInput", message: "Please configure your API keys first.")
+                AppDelegate.showNotification(title: "Vox", message: "Please configure your API keys first.")
                 showSetup()
                 return
             }
@@ -195,12 +302,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private func startRecording() {
         state = .recording
         updateStatusIcon()
+        recorder.onAudioLevel = { [weak self] level in
+            self?.overlay.updateAudioLevel(level)
+        }
         recorder.start()
         NSSound(named: "Tink")?.play()
-        NSLog("VoiceInput: Recording started")
+        NSLog("Vox: Recording started")
     }
 
     private func stopAndProcess() {
+        recorder.onAudioLevel = nil
         guard let audioURL = recorder.stop() else {
             state = .idle
             updateStatusIcon()
@@ -210,7 +321,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         // Check minimum recording length (~0.5s of 16kHz mono 16-bit = ~16KB)
         let fileSize = (try? FileManager.default.attributesOfItem(atPath: audioURL.path)[.size] as? Int) ?? 0
         if fileSize < 16000 {
-            NSLog("VoiceInput: Recording too short (\(fileSize) bytes), ignoring")
+            NSLog("Vox: Recording too short (\(fileSize) bytes), ignoring")
             state = .idle
             updateStatusIcon()
             try? FileManager.default.removeItem(at: audioURL)
@@ -219,11 +330,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Check if any meaningful audio was captured (not just silence)
         if !recorder.hasAudio {
-            NSLog("VoiceInput: No audio detected (peak: \(recorder.peakPower) dB), skipping")
+            NSLog("Vox: No audio detected (peak: \(recorder.peakPower) dB), skipping")
             state = .idle
             updateStatusIcon()
             NSSound(named: "Basso")?.play()
-            AppDelegate.showNotification(title: "VoiceInput", message: "No audio detected. Check your microphone.")
+            AppDelegate.showNotification(title: "Vox", message: "No audio detected. Check your microphone.")
             try? FileManager.default.removeItem(at: audioURL)
             return
         }
@@ -231,14 +342,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         state = .processing
         updateStatusIcon()
         NSSound(named: "Pop")?.play()
-        NSLog("VoiceInput: Recording stopped (\(fileSize) bytes, peak: \(recorder.peakPower) dB), processing...")
+        NSLog("Vox: Recording stopped (\(fileSize) bytes, peak: \(recorder.peakPower) dB), processing...")
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
             let logPath = NSHomeDirectory() + "/.voiceinput/debug.log"
             func debugLog(_ msg: String) {
                 let ts = ISO8601DateFormatter().string(from: Date())
                 let line = "[\(ts)] \(msg)\n"
-                NSLog("VoiceInput: \(msg)")
+                NSLog("Vox: \(msg)")
                 if let data = line.data(using: .utf8) {
                     if FileManager.default.fileExists(atPath: logPath) {
                         if let fh = FileHandle(forWritingAtPath: logPath) {
@@ -250,7 +361,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 }
             }
 
-            // Step 1: Transcription (Qwen ASR or local Whisper)
             debugLog("Step 1: Transcribe start (file: \(audioURL.lastPathComponent))")
             let rawText = Transcriber.transcribe(audioFile: audioURL)
             debugLog("Step 1: Transcribe result: [\(rawText)]")
@@ -260,20 +370,17 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 DispatchQueue.main.async {
                     self?.state = .idle
                     self?.updateStatusIcon()
-                    AppDelegate.showNotification(title: "VoiceInput", message: "Could not recognize speech. Try again.")
+                    AppDelegate.showNotification(title: "Vox", message: "Could not recognize speech. Try again.")
                 }
                 try? FileManager.default.removeItem(at: audioURL)
                 return
             }
 
-            // Step 2: LLM post-processing (if configured)
             debugLog("Step 2: PostProcessor start")
             let cleanText = PostProcessor.process(rawText: rawText)
             let postProcessed = cleanText.isEmpty ? rawText : cleanText
             debugLog("Step 2: PostProcessor result: [\(postProcessed)]")
 
-            // Step 3: Deterministic formatting (only when LLM is not active)
-            // LLM already handles spacing, punctuation, and formatting
             let finalText: String
             if PostProcessor.isConfigured {
                 finalText = postProcessed
@@ -283,7 +390,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 debugLog("Step 3: TextFormatter applied: [\(finalText)]")
             }
 
-            // Step 4: Paste
             debugLog("Step 4: Pasting...")
             DispatchQueue.main.async {
                 PasteHelper.paste(text: finalText)
@@ -293,7 +399,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 NSSound(named: "Glass")?.play()
             }
 
-            // Cleanup
             try? FileManager.default.removeItem(at: audioURL)
         }
     }
@@ -313,6 +418,12 @@ private func hotKeyHandler(
     _ event: EventRef?,
     _ userData: UnsafeMutableRawPointer?
 ) -> OSStatus {
-    AppDelegate.shared?.toggleRecording()
+    guard let event = event else { return noErr }
+    let kind = GetEventKind(event)
+    if kind == UInt32(kEventHotKeyPressed) {
+        AppDelegate.shared?.hotKeyPressed()
+    } else if kind == UInt32(kEventHotKeyReleased) {
+        AppDelegate.shared?.hotKeyReleased()
+    }
     return noErr
 }

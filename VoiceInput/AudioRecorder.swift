@@ -5,6 +5,8 @@ class AudioRecorder {
     private var currentURL: URL?
     private var meteringTimer: Timer?
     private(set) var peakPower: Float = -160.0 // Track peak audio level
+    private(set) var currentPower: Float = -160.0 // Real-time level
+    var onAudioLevel: ((Float) -> Void)?
 
     func start() {
         let timestamp = Int(Date().timeIntervalSince1970)
@@ -27,13 +29,15 @@ class AudioRecorder {
             audioRecorder?.isMeteringEnabled = true
             audioRecorder?.record()
 
-            // Sample audio level every 200ms to detect silence
-            meteringTimer = Timer.scheduledTimer(withTimeInterval: 0.2, repeats: true) { [weak self] _ in
+            // Sample audio level every 100ms for smooth visualization + silence detection
+            meteringTimer = Timer.scheduledTimer(withTimeInterval: 0.1, repeats: true) { [weak self] _ in
                 self?.audioRecorder?.updateMeters()
                 let power = self?.audioRecorder?.averagePower(forChannel: 0) ?? -160.0
+                self?.currentPower = power
                 if power > (self?.peakPower ?? -160.0) {
                     self?.peakPower = power
                 }
+                self?.onAudioLevel?(power)
             }
         } catch {
             NSLog("VoiceInput: Recording failed: \(error)")
