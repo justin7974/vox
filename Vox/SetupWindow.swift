@@ -227,7 +227,11 @@ class SetupWindow: NSObject, NSWindowDelegate {
     // MARK: - Navigation
 
     private func navigateTo(_ step: Step) {
-        // Save state before leaving apiConfig
+        // Save state before leaving current step
+        if currentStep == .hotkeyMode, let recorder = hotkeyRecorder {
+            selectedKeyCode = recorder.keyCode
+            selectedModifiers = recorder.modifiers
+        }
         if currentStep == .apiConfig && asrPopup != nil {
             captureAPIConfigState()
         }
@@ -303,6 +307,12 @@ class SetupWindow: NSObject, NSWindowDelegate {
         if currentStep == .complete {
             window.close()
             return
+        }
+
+        // Capture hotkey state before leaving hotkeyMode
+        if currentStep == .hotkeyMode, let recorder = hotkeyRecorder {
+            selectedKeyCode = recorder.keyCode
+            selectedModifiers = recorder.modifiers
         }
 
         if currentStep == .apiConfig {
@@ -920,6 +930,12 @@ class SetupWindow: NSObject, NSWindowDelegate {
     }
 
     private func saveConfig() {
+        // Safety net: always read latest values from recorder
+        if let recorder = hotkeyRecorder {
+            selectedKeyCode = recorder.keyCode
+            selectedModifiers = recorder.modifiers
+        }
+
         let asrIndex = asrPopup.indexOfSelectedItem
         let llmIndex = llmPopup.indexOfSelectedItem
         let asrProvider = SetupWindow.asrProviders[asrIndex]

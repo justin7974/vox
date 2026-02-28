@@ -22,7 +22,7 @@ enum PostProcessor {
 
     // MARK: - System Prompt (based on Typeless architecture analysis)
 
-    private static let systemPrompt = """
+    static let defaultPrompt = """
     你是一位语音转文字的语义重构引擎。将口语化的语音转录重构为用户真正想表达的书面文字。
 
     ## 核心处理流程
@@ -101,8 +101,60 @@ enum PostProcessor {
         return APIConfig(baseURL: baseURL, apiKey: apiKey, model: model, userContext: userContext, format: format)
     }
 
+    /// Prompt file with user instructions. Lines starting with # are comments
+    /// and stripped before sending to LLM. First call auto-creates the file.
+    private static let promptFileContent = """
+    # ============================================================
+    # Vox 语音后处理 Prompt
+    # ============================================================
+    #
+    # 这个文件控制 Vox 把语音转写文字发给 AI 优化时使用的指令。
+    # 你可以自由修改下面的 prompt 来调整输出风格，保存后立即生效。
+    #
+    # 使用说明：
+    #   - 以 # 开头的行是注释，不会发给 AI（改注释不影响效果）
+    #   - 其余所有文字都会作为系统提示词发给 AI
+    #   - 想恢复默认？删掉这个文件，Vox 会自动重新生成
+    #
+    # 常见自定义场景：
+    #   - 想要更口语自然：把"第五步：语气校准"里改成"保持口语风格"
+    #   - 想要更商务正式：加一条"使用正式书面语，避免口语化表达"
+    #   - 想要英文输出：把整个 prompt 改成英文版本
+    #   - 想要特定格式：比如"所有输出用 Markdown 格式"
+    #
+    # ============================================================
+
+    \(defaultPrompt)
+    """
+
+    /// Load custom prompt from ~/.voiceinput/prompt.txt, fall back to built-in default.
+    /// Lines starting with # are stripped (comments for the user, not sent to LLM).
+    private static func loadPrompt() -> String {
+        let promptPath = NSHomeDirectory() + "/.voiceinput/prompt.txt"
+
+        if FileManager.default.fileExists(atPath: promptPath) {
+            if let raw = try? String(contentsOfFile: promptPath, encoding: .utf8),
+               !raw.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                // Strip comment lines (starting with #) before sending to LLM
+                let cleaned = raw
+                    .components(separatedBy: "\n")
+                    .filter { !$0.trimmingCharacters(in: .whitespaces).hasPrefix("#") }
+                    .joined(separator: "\n")
+                    .trimmingCharacters(in: .whitespacesAndNewlines)
+                return cleaned.isEmpty ? defaultPrompt : cleaned
+            }
+        }
+
+        // First run: write prompt with comments to file so user can edit
+        let dir = NSHomeDirectory() + "/.voiceinput"
+        try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        try? promptFileContent.write(toFile: promptPath, atomically: true, encoding: .utf8)
+
+        return defaultPrompt
+    }
+
     private static func buildSystemPrompt(userContext: String) -> String {
-        var prompt = systemPrompt
+        var prompt = loadPrompt()
         if !userContext.isEmpty {
             prompt += "\n\n用户背景：\(userContext)"
         }

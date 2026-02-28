@@ -118,13 +118,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem.button?.imagePosition = .imageOnly
 
         let menu = NSMenu()
-        menu.addItem(NSMenuItem(title: "Vox v2.0", action: nil, keyEquivalent: ""))
+        menu.addItem(NSMenuItem(title: "Vox v2.1", action: nil, keyEquivalent: ""))
         menu.addItem(NSMenuItem.separator())
         let hkItem = NSMenuItem(title: "Hotkey: \(HotkeyRecorderView.hotkeyString(keyCode: hotkeyKeyCode, modifiers: hotkeyModifiers))", action: nil, keyEquivalent: "")
         hotkeyMenuItem = hkItem
         menu.addItem(hkItem)
         menu.addItem(NSMenuItem.separator())
         menu.addItem(NSMenuItem(title: "Settings...", action: #selector(openSettings), keyEquivalent: ","))
+        menu.addItem(NSMenuItem(title: "Edit Prompt", action: #selector(openPromptFile), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: "Open Config File", action: #selector(openConfigFile), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: "View Log", action: #selector(openLog), keyEquivalent: ""))
         menu.addItem(NSMenuItem.separator())
@@ -190,6 +191,21 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func openSettings() {
         showSetup()
+    }
+
+    @objc private func openPromptFile() {
+        let promptPath = NSHomeDirectory() + "/.voiceinput/prompt.txt"
+        if !FileManager.default.fileExists(atPath: promptPath) {
+            // Trigger prompt file creation with comments + default prompt
+            _ = PostProcessor.process(rawText: "")
+        }
+        // Still might not exist if PostProcessor skipped (no LLM config) — create manually
+        if !FileManager.default.fileExists(atPath: promptPath) {
+            let dir = NSHomeDirectory() + "/.voiceinput"
+            try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
+            try? PostProcessor.defaultPrompt.write(toFile: promptPath, atomically: true, encoding: .utf8)
+        }
+        NSWorkspace.shared.open(URL(fileURLWithPath: promptPath))
     }
 
     @objc private func openConfigFile() {
