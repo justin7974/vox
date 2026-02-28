@@ -29,11 +29,18 @@ class StatusOverlay {
         }
 
         positionWindow(window)
-        window.alphaValue = 0
-        window.orderFrontRegardless()
-        NSAnimationContext.runAnimationGroup { ctx in
-            ctx.duration = 0.2
-            window.animator().alphaValue = 1.0
+
+        // If window is already visible (e.g. recording → processing), just update content
+        let alreadyVisible = window.isVisible && window.alphaValue > 0.5
+        if alreadyVisible {
+            window.alphaValue = 1.0
+        } else {
+            window.alphaValue = 0
+            window.orderFrontRegardless()
+            NSAnimationContext.runAnimationGroup { ctx in
+                ctx.duration = 0.2
+                window.animator().alphaValue = 1.0
+            }
         }
     }
 
