@@ -5,7 +5,7 @@ enum PostProcessor {
     // MARK: - Debug logging
 
     private static func debugLog(_ msg: String) {
-        let logPath = NSHomeDirectory() + "/.voiceinput/debug.log"
+        let logPath = NSHomeDirectory() + "/.vox/debug.log"
         let ts = ISO8601DateFormatter().string(from: Date())
         let line = "[PP \(ts)] \(msg)\n"
         NSLog("Vox: \(msg)")
@@ -129,7 +129,7 @@ enum PostProcessor {
     }
 
     private static func loadConfig() -> APIConfig? {
-        let configPath = NSHomeDirectory() + "/.voiceinput/config.json"
+        let configPath = NSHomeDirectory() + "/.vox/config.json"
         guard let data = FileManager.default.contents(atPath: configPath),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
               let provider = json["provider"] as? String,
@@ -137,7 +137,7 @@ enum PostProcessor {
               let baseURL = providerConfig["baseURL"] as? String,
               let apiKey = providerConfig["apiKey"] as? String,
               let model = providerConfig["model"] as? String else {
-            NSLog("Vox: Failed to load config from ~/.voiceinput/config.json")
+            NSLog("Vox: Failed to load config from ~/.vox/config.json")
             return nil
         }
 
@@ -198,10 +198,10 @@ enum PostProcessor {
     \(defaultPrompt)
     """
 
-    /// Load custom prompt from ~/.voiceinput/prompt.txt, fall back to built-in default.
+    /// Load custom prompt from ~/.vox/prompt.txt, fall back to built-in default.
     /// Lines starting with # are stripped (comments for the user, not sent to LLM).
     private static func loadPrompt() -> String {
-        let promptPath = NSHomeDirectory() + "/.voiceinput/prompt.txt"
+        let promptPath = NSHomeDirectory() + "/.vox/prompt.txt"
 
         if FileManager.default.fileExists(atPath: promptPath) {
             if let raw = try? String(contentsOfFile: promptPath, encoding: .utf8),
@@ -217,7 +217,7 @@ enum PostProcessor {
         }
 
         // First run: write prompt with comments to file so user can edit
-        let dir = NSHomeDirectory() + "/.voiceinput"
+        let dir = NSHomeDirectory() + "/.vox"
         try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
         try? promptFileContent.write(toFile: promptPath, atomically: true, encoding: .utf8)
 

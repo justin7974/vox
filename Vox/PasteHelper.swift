@@ -2,7 +2,7 @@ import Cocoa
 
 enum PasteHelper {
     private static func debugLog(_ msg: String) {
-        let logPath = NSHomeDirectory() + "/.voiceinput/debug.log"
+        let logPath = NSHomeDirectory() + "/.vox/debug.log"
         let ts = ISO8601DateFormatter().string(from: Date())
         let line = "[PH \(ts)] \(msg)\n"
         NSLog("Vox: \(msg)")

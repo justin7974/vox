@@ -9,8 +9,9 @@ class SetupWindow: NSObject, NSWindowDelegate {
         case welcome = 0
         case hotkeyMode = 1
         case apiConfig = 2
-        case test = 3
-        case complete = 4
+        case historySettings = 3
+        case test = 4
+        case complete = 5
     }
 
     struct ASRProvider {
@@ -30,7 +31,8 @@ class SetupWindow: NSObject, NSWindowDelegate {
 
     static let asrProviders = [
         ASRProvider(name: "Alibaba Qwen ASR", configKey: "qwen"),
-        ASRProvider(name: "Local Whisper (No API needed)", configKey: "whisper"),
+        ASRProvider(name: "Local Whisper", configKey: "whisper"),
+        ASRProvider(name: "Custom", configKey: "custom"),
     ]
 
     static let llmProviders = [
@@ -61,6 +63,8 @@ class SetupWindow: NSObject, NSWindowDelegate {
         LLMProvider(name: "OpenRouter", configKey: "openrouter",
                     baseURL: "https://openrouter.ai/api/v1/chat/completions", model: "anthropic/claude-haiku",
                     format: "openai"),
+        LLMProvider(name: "Custom", configKey: "custom-llm",
+                    baseURL: "", model: "", format: "openai"),
         LLMProvider(name: "None (Skip post-processing)", configKey: "none",
                     baseURL: "", model: "", format: ""),
     ]
@@ -79,9 +83,24 @@ class SetupWindow: NSObject, NSWindowDelegate {
     private var asrPopup: NSPopUpButton!
     private var asrKeyField: NSTextField!
     private var asrKeyRow: NSView!
+    private var asrBaseURLField: NSTextField!
+    private var asrBaseURLRow: NSView!
+    private var asrModelField: NSTextField!
+    private var asrModelRow: NSView!
+    private var whisperExecField: NSTextField!
+    private var whisperExecRow: NSView!
+    private var whisperModelField: NSTextField!
+    private var whisperModelRow: NSView!
+    private var asrHintLabel: NSTextField!
     private var llmPopup: NSPopUpButton!
     private var llmKeyField: NSTextField!
     private var llmKeyRow: NSView!
+    private var llmBaseURLField: NSTextField!
+    private var llmBaseURLRow: NSView!
+    private var llmModelField: NSTextField!
+    private var llmModelRow: NSView!
+    private var llmFormatPopup: NSPopUpButton!
+    private var llmFormatRow: NSView!
     private var configStatusLabel: NSTextField!
 
     // Per-provider key storage
@@ -89,6 +108,14 @@ class SetupWindow: NSObject, NSWindowDelegate {
     private var lastLLMIndex: Int = 0
     private var savedASRKey: String = ""
     private var selectedASRIndex: Int = 0
+
+    // Custom provider saved values
+    private var savedCustomASR: (baseURL: String, apiKey: String, model: String) = ("", "", "")
+    private var savedWhisperPaths: (exec: String, model: String) = (
+        "/opt/homebrew/bin/whisper-cli",
+        NSHomeDirectory() + "/.cache/whisper-cpp/ggml-large-v3-turbo.bin"
+    )
+    private var savedCustomLLM: (baseURL: String, model: String, format: String) = ("", "", "openai")
 
     // Hotkey mode
     private var selectedHotkeyMode: String = "toggle"
@@ -111,15 +138,19 @@ class SetupWindow: NSObject, NSWindowDelegate {
     // Audio visualization
     private var audioLevelView: AudioLevelView?
 
+    // History settings
+    private var historyEnabledCheckbox: NSButton?
+    private var historyRetentionPopup: NSPopUpButton?
+
     private var onComplete: (() -> Void)?
 
     // MARK: - Step sequence
 
     private var steps: [Step] {
         if isOnboarding {
-            return [.welcome, .hotkeyMode, .apiConfig, .test, .complete]
+            return [.welcome, .hotkeyMode, .apiConfig, .historySettings, .test, .complete]
         } else {
-            return [.hotkeyMode, .apiConfig]
+            return [.hotkeyMode, .apiConfig, .historySettings]
         }
     }
 
@@ -132,7 +163,7 @@ class SetupWindow: NSObject, NSWindowDelegate {
     func show(onComplete: @escaping () -> Void) {
         self.onComplete = onComplete
 
-        let configPath = NSHomeDirectory() + "/.voiceinput/config.json"
+        let configPath = NSHomeDirectory() + "/.vox/config.json"
         isOnboarding = !FileManager.default.fileExists(atPath: configPath)
 
         window = NSWindow(
@@ -248,6 +279,8 @@ class SetupWindow: NSObject, NSWindowDelegate {
         case .apiConfig:
             view = buildAPIConfig()
             applyConfigState()
+        case .historySettings:
+            view = buildHistorySettings()
         case .test:
             view = buildTest()
         case .complete:
@@ -279,7 +312,7 @@ class SetupWindow: NSObject, NSWindowDelegate {
         switch currentStep {
         case .welcome:
             nextButton.title = "Get Started"
-        case .apiConfig where !isOnboarding:
+        case .historySettings where !isOnboarding:
             nextButton.title = "Save"
         case .test:
             nextButton.title = "Finish Setup"
@@ -317,6 +350,10 @@ class SetupWindow: NSObject, NSWindowDelegate {
 
         if currentStep == .apiConfig {
             if !validateAndSaveConfig() { return }
+        }
+
+        if currentStep == .historySettings {
+            saveHistorySettings()
         }
 
         let idx = currentStepIndex
@@ -625,6 +662,7 @@ class SetupWindow: NSObject, NSWindowDelegate {
         cardStack.addArrangedSubview(providerRow)
         providerRow.widthAnchor.constraint(equalTo: cardStack.widthAnchor).isActive = true
 
+        // Qwen API Key row
         let keyRow = makeFormRow(label: "API Key")
         asrKeyField = NSTextField()
         asrKeyField.translatesAutoresizingMaskIntoConstraints = false
@@ -636,13 +674,65 @@ class SetupWindow: NSObject, NSWindowDelegate {
         cardStack.addArrangedSubview(keyRow)
         keyRow.widthAnchor.constraint(equalTo: cardStack.widthAnchor).isActive = true
 
-        let hint = NSTextField(labelWithString: "Get your key from bailian.console.aliyun.com")
-        hint.font = .systemFont(ofSize: 11)
-        hint.textColor = .tertiaryLabelColor
-        hint.isBordered = false
-        hint.isEditable = false
-        hint.backgroundColor = .clear
-        cardStack.addArrangedSubview(hint)
+        // Custom ASR: Base URL
+        let baseURLRow = makeFormRow(label: "Base URL")
+        asrBaseURLField = NSTextField()
+        asrBaseURLField.translatesAutoresizingMaskIntoConstraints = false
+        asrBaseURLField.placeholderString = "https://api.groq.com/openai/v1/audio/transcriptions"
+        asrBaseURLField.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
+        asrBaseURLField.lineBreakMode = .byTruncatingMiddle
+        baseURLRow.addArrangedSubview(asrBaseURLField)
+        asrBaseURLField.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        cardStack.addArrangedSubview(baseURLRow)
+        baseURLRow.widthAnchor.constraint(equalTo: cardStack.widthAnchor).isActive = true
+        asrBaseURLRow = baseURLRow
+
+        // Custom ASR: Model
+        let modelRow = makeFormRow(label: "Model")
+        asrModelField = NSTextField()
+        asrModelField.translatesAutoresizingMaskIntoConstraints = false
+        asrModelField.placeholderString = "whisper-large-v3-turbo"
+        asrModelField.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
+        modelRow.addArrangedSubview(asrModelField)
+        asrModelField.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        cardStack.addArrangedSubview(modelRow)
+        modelRow.widthAnchor.constraint(equalTo: cardStack.widthAnchor).isActive = true
+        asrModelRow = modelRow
+
+        // Local Whisper: Executable Path
+        let execRow = makeFormRow(label: "Executable")
+        whisperExecField = NSTextField()
+        whisperExecField.translatesAutoresizingMaskIntoConstraints = false
+        whisperExecField.placeholderString = "/opt/homebrew/bin/whisper-cli"
+        whisperExecField.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
+        whisperExecField.lineBreakMode = .byTruncatingMiddle
+        execRow.addArrangedSubview(whisperExecField)
+        whisperExecField.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        cardStack.addArrangedSubview(execRow)
+        execRow.widthAnchor.constraint(equalTo: cardStack.widthAnchor).isActive = true
+        whisperExecRow = execRow
+
+        // Local Whisper: Model Path
+        let whisperModelRow = makeFormRow(label: "Model File")
+        whisperModelField = NSTextField()
+        whisperModelField.translatesAutoresizingMaskIntoConstraints = false
+        whisperModelField.placeholderString = "~/.cache/whisper-cpp/ggml-large-v3-turbo.bin"
+        whisperModelField.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
+        whisperModelField.lineBreakMode = .byTruncatingMiddle
+        whisperModelRow.addArrangedSubview(whisperModelField)
+        whisperModelField.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        cardStack.addArrangedSubview(whisperModelRow)
+        whisperModelRow.widthAnchor.constraint(equalTo: cardStack.widthAnchor).isActive = true
+        self.whisperModelRow = whisperModelRow
+
+        // Hint text (changes based on provider)
+        asrHintLabel = NSTextField(labelWithString: "Get your key from bailian.console.aliyun.com")
+        asrHintLabel.font = .systemFont(ofSize: 11)
+        asrHintLabel.textColor = .tertiaryLabelColor
+        asrHintLabel.isBordered = false
+        asrHintLabel.isEditable = false
+        asrHintLabel.backgroundColor = .clear
+        cardStack.addArrangedSubview(asrHintLabel)
 
         return (card, keyRow)
     }
@@ -677,6 +767,32 @@ class SetupWindow: NSObject, NSWindowDelegate {
         cardStack.addArrangedSubview(providerRow)
         providerRow.widthAnchor.constraint(equalTo: cardStack.widthAnchor).isActive = true
 
+        // Custom LLM: Base URL
+        let baseURLRow = makeFormRow(label: "Base URL")
+        llmBaseURLField = NSTextField()
+        llmBaseURLField.translatesAutoresizingMaskIntoConstraints = false
+        llmBaseURLField.placeholderString = "http://localhost:11434/v1/chat/completions"
+        llmBaseURLField.font = .monospacedSystemFont(ofSize: 11, weight: .regular)
+        llmBaseURLField.lineBreakMode = .byTruncatingMiddle
+        baseURLRow.addArrangedSubview(llmBaseURLField)
+        llmBaseURLField.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        cardStack.addArrangedSubview(baseURLRow)
+        baseURLRow.widthAnchor.constraint(equalTo: cardStack.widthAnchor).isActive = true
+        llmBaseURLRow = baseURLRow
+
+        // Custom LLM: Model
+        let modelRow = makeFormRow(label: "Model")
+        llmModelField = NSTextField()
+        llmModelField.translatesAutoresizingMaskIntoConstraints = false
+        llmModelField.placeholderString = "qwen2.5:7b"
+        llmModelField.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
+        modelRow.addArrangedSubview(llmModelField)
+        llmModelField.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        cardStack.addArrangedSubview(modelRow)
+        modelRow.widthAnchor.constraint(equalTo: cardStack.widthAnchor).isActive = true
+        llmModelRow = modelRow
+
+        // API Key
         let keyRow = makeFormRow(label: "API Key")
         llmKeyField = NSTextField()
         llmKeyField.translatesAutoresizingMaskIntoConstraints = false
@@ -687,6 +803,18 @@ class SetupWindow: NSObject, NSWindowDelegate {
         llmKeyField.setContentHuggingPriority(.defaultLow, for: .horizontal)
         cardStack.addArrangedSubview(keyRow)
         keyRow.widthAnchor.constraint(equalTo: cardStack.widthAnchor).isActive = true
+
+        // Custom LLM: Format
+        let formatRow = makeFormRow(label: "Format")
+        llmFormatPopup = NSPopUpButton()
+        llmFormatPopup.translatesAutoresizingMaskIntoConstraints = false
+        llmFormatPopup.font = .systemFont(ofSize: 13)
+        llmFormatPopup.addItems(withTitles: ["OpenAI Compatible", "Anthropic Compatible"])
+        formatRow.addArrangedSubview(llmFormatPopup)
+        llmFormatPopup.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        cardStack.addArrangedSubview(formatRow)
+        formatRow.widthAnchor.constraint(equalTo: cardStack.widthAnchor).isActive = true
+        llmFormatRow = formatRow
 
         return (card, keyRow)
     }
@@ -837,6 +965,108 @@ class SetupWindow: NSObject, NSWindowDelegate {
 
     // MARK: - Step 5: Complete
 
+    // MARK: - Step: History Settings
+
+    private func buildHistorySettings() -> NSView {
+        let container = NSView()
+
+        let stack = NSStackView()
+        stack.orientation = .vertical
+        stack.alignment = .centerX
+        stack.spacing = 20
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(stack)
+
+        NSLayoutConstraint.activate([
+            stack.centerXAnchor.constraint(equalTo: container.centerXAnchor),
+            stack.centerYAnchor.constraint(equalTo: container.centerYAnchor, constant: -10),
+            stack.widthAnchor.constraint(lessThanOrEqualTo: container.widthAnchor, constant: -80),
+        ])
+
+        // Title
+        let title = NSTextField(labelWithString: "History Settings")
+        title.font = .systemFont(ofSize: 24, weight: .bold)
+        title.textColor = .labelColor
+        title.alignment = .center
+        stack.addArrangedSubview(title)
+
+        let subtitle = NSTextField(wrappingLabelWithString: "Save your voice input results so you can find and copy them later.")
+        subtitle.font = .systemFont(ofSize: 14)
+        subtitle.textColor = .secondaryLabelColor
+        subtitle.alignment = .center
+        stack.addArrangedSubview(subtitle)
+
+        // Card
+        let card = makeCard()
+        let cardStack = NSStackView()
+        cardStack.orientation = .vertical
+        cardStack.alignment = .leading
+        cardStack.spacing = 20
+        cardStack.translatesAutoresizingMaskIntoConstraints = false
+        card.addSubview(cardStack)
+        pinInside(cardStack, to: card, inset: 28)
+
+        // Retention period (includes Never = disabled)
+        let retentionRow = NSStackView()
+        retentionRow.orientation = .horizontal
+        retentionRow.spacing = 12
+        retentionRow.alignment = .centerY
+
+        let retentionLabel = NSTextField(labelWithString: "Keep records for:")
+        retentionLabel.font = .systemFont(ofSize: 15)
+        retentionLabel.textColor = .labelColor
+        retentionRow.addArrangedSubview(retentionLabel)
+
+        let popup = NSPopUpButton()
+        popup.addItems(withTitles: ["Never", "1 day", "7 days", "30 days", "Forever"])
+        let currentDays = HistoryManager.shared.retentionDays
+        let enabled = HistoryManager.shared.isEnabled
+        if !enabled {
+            popup.selectItem(at: 0) // Never
+        } else {
+            switch currentDays {
+            case 1: popup.selectItem(at: 1)
+            case 30: popup.selectItem(at: 3)
+            case 0: popup.selectItem(at: 4) // Forever
+            default: popup.selectItem(at: 2) // 7 days
+            }
+        }
+        popup.font = .systemFont(ofSize: 13)
+        historyRetentionPopup = popup
+        retentionRow.addArrangedSubview(popup)
+
+        cardStack.addArrangedSubview(retentionRow)
+
+        // Info text
+        let info = NSTextField(wrappingLabelWithString: "Only polished results are saved (not raw transcriptions).\nYou can view and manage history from the menu bar.")
+        info.font = .systemFont(ofSize: 12)
+        info.textColor = .tertiaryLabelColor
+        cardStack.addArrangedSubview(info)
+
+        stack.addArrangedSubview(card)
+        card.widthAnchor.constraint(equalToConstant: 440).isActive = true
+
+        return container
+    }
+
+    private func saveHistorySettings() {
+        let popupIndex = historyRetentionPopup?.indexOfSelectedItem ?? 2
+
+        if popupIndex == 0 {
+            // "Never" — disable history
+            HistoryManager.shared.isEnabled = false
+            NSLog("Vox: History settings saved — disabled (Never)")
+        } else {
+            HistoryManager.shared.isEnabled = true
+            let daysMap = [1: 1, 2: 7, 3: 30, 4: 0] // 0 = forever
+            let days = daysMap[popupIndex] ?? 7
+            HistoryManager.shared.retentionDays = days
+            NSLog("Vox: History settings saved — enabled, retention: \(days == 0 ? "forever" : "\(days) days")")
+        }
+    }
+
+    // MARK: - Step: Complete
+
     private func buildComplete() -> NSView {
         let container = NSView()
 
@@ -919,7 +1149,22 @@ class SetupWindow: NSObject, NSWindowDelegate {
             configStatusLabel.stringValue = "Please enter your Qwen ASR API key."
             return false
         }
-        if llmProvider.configKey != "none" && llmProvider.configKey != "qwen-llm" && llmKeyField.stringValue.isEmpty {
+        if asrProvider.configKey == "custom" {
+            if asrBaseURLField.stringValue.isEmpty {
+                configStatusLabel.stringValue = "Please enter your custom ASR endpoint URL."
+                return false
+            }
+            if asrKeyField.stringValue.isEmpty {
+                configStatusLabel.stringValue = "Please enter your custom ASR API key."
+                return false
+            }
+        }
+        if llmProvider.configKey == "custom-llm" {
+            if llmBaseURLField.stringValue.isEmpty {
+                configStatusLabel.stringValue = "Please enter your custom LLM endpoint URL."
+                return false
+            }
+        } else if llmProvider.configKey != "none" && llmProvider.configKey != "qwen-llm" && llmKeyField.stringValue.isEmpty {
             configStatusLabel.stringValue = "Please enter your LLM API key, or select None."
             return false
         }
@@ -956,7 +1201,7 @@ class SetupWindow: NSObject, NSWindowDelegate {
         } else if !savedASRKey.isEmpty {
             qwenKey = savedASRKey
         } else {
-            let configPath = NSHomeDirectory() + "/.voiceinput/config.json"
+            let configPath = NSHomeDirectory() + "/.vox/config.json"
             if let data = FileManager.default.contents(atPath: configPath),
                let existing = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
                let qwenConfig = existing["qwen-asr"] as? [String: Any],
@@ -970,6 +1215,29 @@ class SetupWindow: NSObject, NSWindowDelegate {
             config["qwen-asr"] = ["apiKey": qwenKey]
         }
 
+        // Save custom ASR config
+        if asrProvider.configKey == "custom" {
+            config["custom-asr"] = [
+                "baseURL": asrBaseURLField.stringValue,
+                "apiKey": asrKeyField.stringValue,
+                "model": asrModelField.stringValue
+            ]
+        } else if !savedCustomASR.baseURL.isEmpty {
+            config["custom-asr"] = [
+                "baseURL": savedCustomASR.baseURL,
+                "apiKey": savedCustomASR.apiKey,
+                "model": savedCustomASR.model
+            ]
+        }
+
+        // Save local whisper paths
+        let whisperExec = asrProvider.configKey == "whisper" ? whisperExecField.stringValue : savedWhisperPaths.exec
+        let whisperModel = asrProvider.configKey == "whisper" ? whisperModelField.stringValue : savedWhisperPaths.model
+        config["whisper"] = [
+            "executablePath": whisperExec,
+            "modelPath": whisperModel
+        ]
+
         // Save current LLM key
         if llmProvider.configKey != "none" {
             if llmProvider.configKey == "qwen-llm" {
@@ -980,8 +1248,8 @@ class SetupWindow: NSObject, NSWindowDelegate {
             config["provider"] = llmProvider.configKey
         }
 
-        // Write all provider keys
-        for p in SetupWindow.llmProviders where p.configKey != "none" {
+        // Write all built-in provider keys
+        for p in SetupWindow.llmProviders where p.configKey != "none" && p.configKey != "custom-llm" {
             if let key = llmKeys[p.configKey], !key.isEmpty {
                 config[p.configKey] = [
                     "baseURL": p.baseURL,
@@ -992,15 +1260,33 @@ class SetupWindow: NSObject, NSWindowDelegate {
             }
         }
 
+        // Save custom LLM config
+        if llmProvider.configKey == "custom-llm" {
+            let format = llmFormatPopup.indexOfSelectedItem == 0 ? "openai" : "anthropic"
+            config["custom-llm"] = [
+                "baseURL": llmBaseURLField.stringValue,
+                "apiKey": llmKeyField.stringValue,
+                "model": llmModelField.stringValue,
+                "format": format
+            ]
+        } else if !savedCustomLLM.baseURL.isEmpty {
+            config["custom-llm"] = [
+                "baseURL": savedCustomLLM.baseURL,
+                "apiKey": llmKeys["custom-llm"] ?? "",
+                "model": savedCustomLLM.model,
+                "format": savedCustomLLM.format
+            ]
+        }
+
         // Preserve userContext
-        let configPath = NSHomeDirectory() + "/.voiceinput/config.json"
+        let configPath = NSHomeDirectory() + "/.vox/config.json"
         if let data = FileManager.default.contents(atPath: configPath),
            let existing = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
            let ctx = existing["userContext"] as? String, !ctx.isEmpty {
             config["userContext"] = ctx
         }
 
-        let configDir = NSHomeDirectory() + "/.voiceinput"
+        let configDir = NSHomeDirectory() + "/.vox"
         try? FileManager.default.createDirectory(atPath: configDir, withIntermediateDirectories: true)
 
         if let jsonData = try? JSONSerialization.data(withJSONObject: config, options: [.prettyPrinted, .sortedKeys]) {
@@ -1012,7 +1298,7 @@ class SetupWindow: NSObject, NSWindowDelegate {
     // MARK: - Config: Load & Apply
 
     private func loadExistingConfig() {
-        let configPath = NSHomeDirectory() + "/.voiceinput/config.json"
+        let configPath = NSHomeDirectory() + "/.vox/config.json"
         guard let data = FileManager.default.contents(atPath: configPath),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else { return }
 
@@ -1032,8 +1318,42 @@ class SetupWindow: NSObject, NSWindowDelegate {
             savedASRKey = key
         }
 
-        if let asr = json["asr"] as? String, asr == "whisper" {
-            selectedASRIndex = 1
+        if let asr = json["asr"] as? String {
+            for (i, p) in SetupWindow.asrProviders.enumerated() {
+                if p.configKey == asr {
+                    selectedASRIndex = i
+                    break
+                }
+            }
+        }
+
+        // Load custom ASR config
+        if let customASR = json["custom-asr"] as? [String: Any] {
+            savedCustomASR = (
+                customASR["baseURL"] as? String ?? "",
+                customASR["apiKey"] as? String ?? "",
+                customASR["model"] as? String ?? ""
+            )
+        }
+
+        // Load local whisper paths
+        if let whisperConfig = json["whisper"] as? [String: Any] {
+            savedWhisperPaths = (
+                whisperConfig["executablePath"] as? String ?? "/opt/homebrew/bin/whisper-cli",
+                whisperConfig["modelPath"] as? String ?? NSHomeDirectory() + "/.cache/whisper-cpp/ggml-large-v3-turbo.bin"
+            )
+        }
+
+        // Load custom LLM config
+        if let customLLM = json["custom-llm"] as? [String: Any] {
+            savedCustomLLM = (
+                customLLM["baseURL"] as? String ?? "",
+                customLLM["model"] as? String ?? "",
+                customLLM["format"] as? String ?? "openai"
+            )
+            if let key = customLLM["apiKey"] as? String {
+                llmKeys["custom-llm"] = key
+            }
         }
 
         for p in SetupWindow.llmProviders where p.configKey != "none" {
@@ -1058,33 +1378,79 @@ class SetupWindow: NSObject, NSWindowDelegate {
         guard asrPopup != nil else { return }
 
         asrPopup.selectItem(at: selectedASRIndex)
-        asrKeyRow.isHidden = selectedASRIndex != 0
+        let asrProvider = SetupWindow.asrProviders[selectedASRIndex]
 
-        if !savedASRKey.isEmpty {
+        // ASR field visibility
+        asrKeyRow.isHidden = asrProvider.configKey == "whisper"
+        asrBaseURLRow.isHidden = asrProvider.configKey != "custom"
+        asrModelRow.isHidden = asrProvider.configKey != "custom"
+        whisperExecRow.isHidden = asrProvider.configKey != "whisper"
+        whisperModelRow.isHidden = asrProvider.configKey != "whisper"
+
+        switch asrProvider.configKey {
+        case "qwen":
             asrKeyField.stringValue = savedASRKey
+            asrHintLabel.stringValue = "Get your key from bailian.console.aliyun.com"
+        case "whisper":
+            whisperExecField.stringValue = savedWhisperPaths.exec
+            whisperModelField.stringValue = savedWhisperPaths.model
+            asrHintLabel.stringValue = "Install: brew install whisper-cpp && whisper-cpp-download-ggml-model large-v3-turbo"
+        case "custom":
+            asrBaseURLField.stringValue = savedCustomASR.baseURL
+            asrKeyField.stringValue = savedCustomASR.apiKey
+            asrModelField.stringValue = savedCustomASR.model
+            asrHintLabel.stringValue = "OpenAI Whisper API compatible endpoint (Groq, Azure, etc.)"
+        default:
+            break
         }
 
+        // LLM field visibility
         llmPopup.selectItem(at: lastLLMIndex)
-        let p = SetupWindow.llmProviders[lastLLMIndex]
-        llmKeyRow.isHidden = (p.configKey == "none" || p.configKey == "qwen-llm")
+        let llmProvider = SetupWindow.llmProviders[lastLLMIndex]
+        let isNone = llmProvider.configKey == "none"
+        let isQwenLLM = llmProvider.configKey == "qwen-llm"
+        let isCustomLLM = llmProvider.configKey == "custom-llm"
 
-        if p.configKey == "qwen-llm" {
+        llmKeyRow.isHidden = isNone || isQwenLLM
+        llmBaseURLRow.isHidden = !isCustomLLM
+        llmModelRow.isHidden = !isCustomLLM
+        llmFormatRow.isHidden = !isCustomLLM
+
+        if isCustomLLM {
+            llmBaseURLField.stringValue = savedCustomLLM.baseURL
+            llmModelField.stringValue = savedCustomLLM.model
+            llmFormatPopup.selectItem(at: savedCustomLLM.format == "anthropic" ? 1 : 0)
+            llmKeyField.stringValue = llmKeys["custom-llm"] ?? ""
+        } else if isQwenLLM {
             llmKeyField.stringValue = asrKeyField.stringValue
         } else {
-            llmKeyField.stringValue = llmKeys[p.configKey] ?? ""
+            llmKeyField.stringValue = llmKeys[llmProvider.configKey] ?? ""
         }
     }
 
     /// Capture current API config UI state back to properties
     private func captureAPIConfigState() {
         selectedASRIndex = asrPopup.indexOfSelectedItem
-        if selectedASRIndex == 0 && !asrKeyField.stringValue.isEmpty {
-            savedASRKey = asrKeyField.stringValue
+        let asrProvider = SetupWindow.asrProviders[selectedASRIndex]
+
+        switch asrProvider.configKey {
+        case "qwen":
+            if !asrKeyField.stringValue.isEmpty { savedASRKey = asrKeyField.stringValue }
+        case "custom":
+            savedCustomASR = (asrBaseURLField.stringValue, asrKeyField.stringValue, asrModelField.stringValue)
+        case "whisper":
+            savedWhisperPaths = (whisperExecField.stringValue, whisperModelField.stringValue)
+        default:
+            break
         }
 
         let llmIndex = llmPopup.indexOfSelectedItem
         let llmProvider = SetupWindow.llmProviders[llmIndex]
-        if llmProvider.configKey != "none" && llmProvider.configKey != "qwen-llm" {
+        if llmProvider.configKey == "custom-llm" {
+            savedCustomLLM = (llmBaseURLField.stringValue, llmModelField.stringValue,
+                              llmFormatPopup.indexOfSelectedItem == 0 ? "openai" : "anthropic")
+            llmKeys["custom-llm"] = llmKeyField.stringValue
+        } else if llmProvider.configKey != "none" && llmProvider.configKey != "qwen-llm" {
             llmKeys[llmProvider.configKey] = llmKeyField.stringValue
         }
         lastLLMIndex = llmIndex
@@ -1093,14 +1459,56 @@ class SetupWindow: NSObject, NSWindowDelegate {
     // MARK: - Provider Change Actions
 
     @objc private func asrProviderChanged() {
-        let isQwen = asrPopup.indexOfSelectedItem == 0
-        if !isQwen && !asrKeyField.stringValue.isEmpty {
+        let index = asrPopup.indexOfSelectedItem
+        let provider = SetupWindow.asrProviders[index]
+
+        // Save current values before switching
+        let oldIndex = selectedASRIndex
+        let oldProvider = SetupWindow.asrProviders[oldIndex]
+        if oldProvider.configKey == "qwen" && !asrKeyField.stringValue.isEmpty {
             savedASRKey = asrKeyField.stringValue
+        } else if oldProvider.configKey == "custom" {
+            savedCustomASR = (asrBaseURLField.stringValue, asrKeyField.stringValue, asrModelField.stringValue)
+        } else if oldProvider.configKey == "whisper" {
+            savedWhisperPaths = (whisperExecField.stringValue, whisperModelField.stringValue)
         }
-        if isQwen && asrKeyField.stringValue.isEmpty && !savedASRKey.isEmpty {
+
+        // Show/hide rows based on new selection
+        switch provider.configKey {
+        case "qwen":
+            asrKeyRow.isHidden = false
+            asrBaseURLRow.isHidden = true
+            asrModelRow.isHidden = true
+            whisperExecRow.isHidden = true
+            whisperModelRow.isHidden = true
             asrKeyField.stringValue = savedASRKey
+            asrHintLabel.stringValue = "Get your key from bailian.console.aliyun.com"
+            asrHintLabel.isHidden = false
+        case "whisper":
+            asrKeyRow.isHidden = true
+            asrBaseURLRow.isHidden = true
+            asrModelRow.isHidden = true
+            whisperExecRow.isHidden = false
+            whisperModelRow.isHidden = false
+            whisperExecField.stringValue = savedWhisperPaths.exec
+            whisperModelField.stringValue = savedWhisperPaths.model
+            asrHintLabel.stringValue = "Install: brew install whisper-cpp && whisper-cpp-download-ggml-model large-v3-turbo"
+            asrHintLabel.isHidden = false
+        case "custom":
+            asrKeyRow.isHidden = false
+            asrBaseURLRow.isHidden = false
+            asrModelRow.isHidden = false
+            whisperExecRow.isHidden = true
+            whisperModelRow.isHidden = true
+            asrBaseURLField.stringValue = savedCustomASR.baseURL
+            asrKeyField.stringValue = savedCustomASR.apiKey
+            asrModelField.stringValue = savedCustomASR.model
+            asrHintLabel.stringValue = "OpenAI Whisper API compatible endpoint (Groq, Azure, etc.)"
+            asrHintLabel.isHidden = false
+        default:
+            break
         }
-        asrKeyRow.isHidden = !isQwen
+        selectedASRIndex = index
     }
 
     @objc private func llmProviderChanged() {
@@ -1108,15 +1516,29 @@ class SetupWindow: NSObject, NSWindowDelegate {
         if oldProvider.configKey != "none" {
             llmKeys[oldProvider.configKey] = llmKeyField.stringValue
         }
+        if oldProvider.configKey == "custom-llm" {
+            savedCustomLLM = (llmBaseURLField.stringValue, llmModelField.stringValue,
+                              llmFormatPopup.indexOfSelectedItem == 0 ? "openai" : "anthropic")
+        }
 
         let newIndex = llmPopup.indexOfSelectedItem
         let newProvider = SetupWindow.llmProviders[newIndex]
         let isNone = newProvider.configKey == "none"
         let isQwenLLM = newProvider.configKey == "qwen-llm"
+        let isCustom = newProvider.configKey == "custom-llm"
+
         llmKeyRow.isHidden = isNone || isQwenLLM
+        llmBaseURLRow.isHidden = !isCustom
+        llmModelRow.isHidden = !isCustom
+        llmFormatRow.isHidden = !isCustom
 
         if isQwenLLM {
             llmKeyField.stringValue = asrKeyField.stringValue
+        } else if isCustom {
+            llmBaseURLField.stringValue = savedCustomLLM.baseURL
+            llmModelField.stringValue = savedCustomLLM.model
+            llmFormatPopup.selectItem(at: savedCustomLLM.format == "anthropic" ? 1 : 0)
+            llmKeyField.stringValue = llmKeys["custom-llm"] ?? ""
         } else {
             llmKeyField.stringValue = llmKeys[newProvider.configKey] ?? ""
         }

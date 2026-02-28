@@ -85,7 +85,7 @@ Vox uses cloud APIs. You need to bring your own keys.
 
 ### Configuration
 
-Config file: `~/.voiceinput/config.json`
+Config file: `~/.vox/config.json`
 
 You can edit it directly or use the Settings UI (menubar icon > Settings). See [config.example.json](config.example.json) for the full format.
 
@@ -113,7 +113,7 @@ Hotkey  →  AudioRecorder (16kHz WAV)
 |---|---|
 | No audio detected | System Settings > Privacy > Microphone — allow Vox |
 | Text not pasting | System Settings > Privacy > Accessibility — allow Vox |
-| ASR errors | Check `~/.voiceinput/debug.log`, verify API key in Settings |
+| ASR errors | Check `~/.vox/debug.log`, verify API key in Settings |
 | macOS blocks the app | Run `xattr -cr ~/Applications/Vox.app` |
 | Permissions reset after rebuild | macOS resets TCC on new binary signature. Re-grant permissions. |
 
@@ -195,7 +195,7 @@ Vox 使用云端 API，你需要自己提供 Key。
 
 ### 配置
 
-配置文件位置：`~/.voiceinput/config.json`
+配置文件位置：`~/.vox/config.json`
 
 可以直接编辑文件，也可以通过菜单栏图标 > Settings 打开设置界面。完整格式参见 [config.example.json](config.example.json)。
 
@@ -213,7 +213,7 @@ Vox 使用云端 API，你需要自己提供 Key。
 |---|---|
 | 检测不到音频 | 系统设置 > 隐私与安全 > 麦克风 — 允许 Vox |
 | 文字没有粘贴 | 系统设置 > 隐私与安全 > 辅助功能 — 允许 Vox |
-| 识别报错 | 查看 `~/.voiceinput/debug.log`，检查 API Key 是否正确 |
+| 识别报错 | 查看 `~/.vox/debug.log`，检查 API Key 是否正确 |
 | macOS 阻止运行 | 运行 `xattr -cr ~/Applications/Vox.app` |
 | 重新编译后权限失效 | macOS 对新签名的二进制会重置权限，需要重新授权 |
 

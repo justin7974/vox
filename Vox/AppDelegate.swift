@@ -18,6 +18,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private let overlay = StatusOverlay()
     private var hotKeyRef: EventHotKeyRef?
     private var setupWindow: SetupWindow?
+    private var historyWindowController: HistoryWindowController?
     private var hotkeyMenuItem: NSMenuItem?
     private var translateMenuItem: NSMenuItem?
     private(set) var translateMode: Bool = false
@@ -27,6 +28,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         AppDelegate.shared = self
+        migrateConfigDir()
         setupEditMenu()
         setupStatusBar()
         loadHotkeyMode()
@@ -49,15 +51,31 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
+    // MARK: - Migration
+
+    /// One-time migration: move ~/.voiceinput → ~/.vox (renamed in v2.2)
+    private func migrateConfigDir() {
+        let fm = FileManager.default
+        let oldDir = NSHomeDirectory() + "/.voiceinput"
+        let newDir = NSHomeDirectory() + "/.vox"
+        guard fm.fileExists(atPath: oldDir), !fm.fileExists(atPath: newDir) else { return }
+        do {
+            try fm.moveItem(atPath: oldDir, toPath: newDir)
+            NSLog("Vox: Migrated config from ~/.voiceinput → ~/.vox")
+        } catch {
+            NSLog("Vox: Config migration failed: \(error.localizedDescription)")
+        }
+    }
+
     // MARK: - Config
 
     private func configExists() -> Bool {
-        let configPath = NSHomeDirectory() + "/.voiceinput/config.json"
+        let configPath = NSHomeDirectory() + "/.vox/config.json"
         return FileManager.default.fileExists(atPath: configPath)
     }
 
     func loadHotkeyMode() {
-        let configPath = NSHomeDirectory() + "/.voiceinput/config.json"
+        let configPath = NSHomeDirectory() + "/.vox/config.json"
         if let data = FileManager.default.contents(atPath: configPath),
            let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
             if let mode = json["hotkeyMode"] as? String {
@@ -133,6 +151,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         translateMenuItem = transItem
         menu.addItem(transItem)
 
+        menu.addItem(NSMenuItem(title: "View History", action: #selector(openHistory), keyEquivalent: "h"))
         menu.addItem(NSMenuItem(title: "Edit Prompt", action: #selector(openPromptFile), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: "Open Config File", action: #selector(openConfigFile), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: "View Log", action: #selector(openLog), keyEquivalent: ""))
@@ -207,15 +226,22 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         NSLog("Vox: Translate mode = \(translateMode)")
     }
 
+    @objc private func openHistory() {
+        if historyWindowController == nil {
+            historyWindowController = HistoryWindowController()
+        }
+        historyWindowController?.show()
+    }
+
     @objc private func openPromptFile() {
-        let promptPath = NSHomeDirectory() + "/.voiceinput/prompt.txt"
+        let promptPath = NSHomeDirectory() + "/.vox/prompt.txt"
         if !FileManager.default.fileExists(atPath: promptPath) {
             // Trigger prompt file creation with comments + default prompt
             _ = PostProcessor.process(rawText: "")
         }
         // Still might not exist if PostProcessor skipped (no LLM config) — create manually
         if !FileManager.default.fileExists(atPath: promptPath) {
-            let dir = NSHomeDirectory() + "/.voiceinput"
+            let dir = NSHomeDirectory() + "/.vox"
             try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
             try? PostProcessor.defaultPrompt.write(toFile: promptPath, atomically: true, encoding: .utf8)
         }
@@ -223,7 +249,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func openConfigFile() {
-        let configPath = NSHomeDirectory() + "/.voiceinput/config.json"
+        let configPath = NSHomeDirectory() + "/.vox/config.json"
         if FileManager.default.fileExists(atPath: configPath) {
             NSWorkspace.shared.open(URL(fileURLWithPath: configPath))
         } else {
@@ -232,7 +258,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc private func openLog() {
-        let logPath = NSHomeDirectory() + "/.voiceinput/debug.log"
+        let logPath = NSHomeDirectory() + "/.vox/debug.log"
         if FileManager.default.fileExists(atPath: logPath) {
             NSWorkspace.shared.open(URL(fileURLWithPath: logPath))
         }
@@ -382,7 +408,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         NSLog("Vox: Recording stopped (\(fileSize) bytes, peak: \(recorder.peakPower) dB), processing...")
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let logPath = NSHomeDirectory() + "/.voiceinput/debug.log"
+            let logPath = NSHomeDirectory() + "/.vox/debug.log"
             func debugLog(_ msg: String) {
                 let ts = ISO8601DateFormatter().string(from: Date())
                 let line = "[\(ts)] \(msg)\n"
@@ -431,6 +457,14 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             DispatchQueue.main.async {
                 PasteHelper.paste(text: finalText)
                 debugLog("Step 4: Paste done")
+
+                // Save to history (translation mode: store both languages)
+                if isTranslate {
+                    HistoryManager.shared.addRecord(text: finalText, originalText: rawText, isTranslation: true)
+                } else {
+                    HistoryManager.shared.addRecord(text: finalText)
+                }
+
                 self?.state = .idle
                 self?.updateStatusIcon()
                 NSSound(named: "Glass")?.play()
