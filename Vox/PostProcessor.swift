@@ -52,9 +52,55 @@ enum PostProcessor {
     - 不添加用户没说的内容
     - 不改变用户的观点和立场
 
+    ### 第六步：上下文适配
+    系统会在本 prompt 末尾自动追加「当前上下文：…」，描述用户正在使用的应用或网页。
+    请根据上下文调整语气和格式，优先级：上下文提示 > 默认风格。
+
+    场景对照表：
+    - 邮件（Gmail/Outlook/Mail）→ 正式书面语气，段落清晰，适当使用敬语
+    - 即时聊天（微信/iMessage/Discord/Telegram）→ 口语自然，简短，可以用语气词
+    - 工作沟通（Slack/飞书/钉钉/企业微信）→ 简洁专业，不过于正式也不过于随意
+    - 文档编辑（Notion/Google Docs/Word）→ 结构化书面语，逻辑连贯
+    - 笔记（备忘录/Notes）→ 忠实原意，仅做基本清理，少润色
+    - 编程（VS Code/Xcode/Terminal）→ 简洁技术语言，保留术语原文
+    - 社交媒体（Twitter/LinkedIn）→ 简短有力，适合公开发布
+    - 无上下文或未识别 → 使用本 prompt 的默认风格（自然书面语）
+
+    注意：上下文适配只调整语气和格式，不改变用户的核心意思。
+
     ## 输出规则
     - 直接输出最终文字，无任何前缀、解释或引号包裹
     - 保持原意为最高优先级，宁可少改不多改
+    """
+
+    // MARK: - Translate Prompt
+
+    static let translatePrompt = """
+    你是一位语音翻译引擎。将用户的语音转录翻译为目标语言，同时保持自然流畅。
+
+    ## 处理流程
+
+    ### 第一步：清理源文本
+    - 剔除填充词和语气词（嗯、啊、那个、就是说、um、uh、like、you know）
+    - 口头重复只保留一次
+    - 自我纠正时只保留最终表达
+
+    ### 第二步：翻译
+    - 中文输入 → 翻译为英文
+    - 英文输入 → 翻译为中文
+    - 混合语言 → 全部翻译为英文（默认目标语言）
+    - 保持原文的语气和正式程度
+    - 专有名词保持原文（人名、公司名、产品名）
+
+    ### 第三步：润色
+    - 确保译文在目标语言中自然流畅
+    - 不要逐字翻译，要意译
+    - 根据上下文调整措辞（正式/口语）
+
+    ## 输出规则
+    - 直接输出翻译结果，无任何前缀、解释或引号包裹
+    - 不要输出原文，只输出译文
+    - 不要添加"Translation:"等标签
     """
 
     // MARK: - Config
@@ -111,16 +157,41 @@ enum PostProcessor {
     # 这个文件控制 Vox 把语音转写文字发给 AI 优化时使用的指令。
     # 你可以自由修改下面的 prompt 来调整输出风格，保存后立即生效。
     #
-    # 使用说明：
+    # ── 基本说明 ──
+    #
     #   - 以 # 开头的行是注释，不会发给 AI（改注释不影响效果）
-    #   - 其余所有文字都会作为系统提示词发给 AI
+    #   - 其余所有文字都会作为「系统提示词」发给 AI
     #   - 想恢复默认？删掉这个文件，Vox 会自动重新生成
     #
-    # 常见自定义场景：
+    # ── 上下文感知（自动） ──
+    #
+    #   Vox 会自动检测你当前在哪个应用/网页中使用语音输入，
+    #   并在发给 AI 的 prompt 末尾追加一句上下文提示，例如：
+    #
+    #     "当前上下文：用户正在 Gmail 中处理邮件。请使用正式、清晰的书面语气。"
+    #     "当前上下文：用户正在微信中聊天。请保持口语自然的风格。"
+    #
+    #   这句话由系统自动生成，你不需要手动管理。
+    #   支持的场景包括：邮件(Gmail/Outlook/Mail)、聊天(微信/Slack/Discord)、
+    #   文档(Notion/Google Docs)、编程(VS Code/Xcode/Terminal) 等。
+    #
+    #   如果你不想要上下文自动适配，可以在 prompt 末尾加一句：
+    #     "忽略上下文提示，始终使用统一风格。"
+    #
+    # ── 自定义示例 ──
+    #
     #   - 想要更口语自然：把"第五步：语气校准"里改成"保持口语风格"
     #   - 想要更商务正式：加一条"使用正式书面语，避免口语化表达"
     #   - 想要英文输出：把整个 prompt 改成英文版本
     #   - 想要特定格式：比如"所有输出用 Markdown 格式"
+    #
+    # ── 技术细节（给 AI agent 看的）──
+    #
+    #   发给 LLM 的最终 system prompt 结构：
+    #     1. 本文件的非注释内容（用户自定义的 prompt）
+    #     2. + "用户背景：xxx"（来自 config.json 的 userContext 字段，可选）
+    #     3. + "当前上下文：xxx"（系统自动检测的应用场景，可选）
+    #   修改本文件只影响第 1 部分。第 2、3 部分由系统自动附加。
     #
     # ============================================================
 
@@ -153,10 +224,19 @@ enum PostProcessor {
         return defaultPrompt
     }
 
-    private static func buildSystemPrompt(userContext: String) -> String {
-        var prompt = loadPrompt()
+    private static func buildSystemPrompt(userContext: String, contextHint: String? = nil, translateMode: Bool = false) -> String {
+        var prompt: String
+        if translateMode {
+            prompt = translatePrompt
+        } else {
+            prompt = loadPrompt()
+        }
         if !userContext.isEmpty {
             prompt += "\n\n用户背景：\(userContext)"
+        }
+        if let hint = contextHint, !translateMode {
+            // Context hint only applies to normal mode (not translate)
+            prompt += "\n\n当前上下文：\(hint)"
         }
         return prompt
     }
@@ -168,14 +248,17 @@ enum PostProcessor {
         return loadConfig() != nil
     }
 
-    static func process(rawText: String) -> String {
+    static func process(rawText: String, contextHint: String? = nil, translateMode: Bool = false) -> String {
         guard let config = loadConfig() else {
             debugLog("No LLM config, skipping post-processing")
             return rawText
         }
 
-        debugLog("Using API: \(config.baseURL) model: \(config.model)")
-        let result = callAPI(rawText: rawText, config: config)
+        debugLog("Using API: \(config.baseURL) model: \(config.model) translate: \(translateMode)")
+        if let hint = contextHint {
+            debugLog("Context hint: \(hint)")
+        }
+        let result = callAPI(rawText: rawText, config: config, contextHint: contextHint, translateMode: translateMode)
         if result.isEmpty {
             debugLog("LLM failed, returning raw text")
             DispatchQueue.main.async {
@@ -186,13 +269,13 @@ enum PostProcessor {
         return result
     }
 
-    private static func callAPI(rawText: String, config: APIConfig) -> String {
+    private static func callAPI(rawText: String, config: APIConfig, contextHint: String? = nil, translateMode: Bool = false) -> String {
         guard let url = URL(string: config.baseURL) else {
             debugLog("Invalid API URL: \(config.baseURL)")
             return ""
         }
 
-        let finalPrompt = buildSystemPrompt(userContext: config.userContext)
+        let finalPrompt = buildSystemPrompt(userContext: config.userContext, contextHint: contextHint, translateMode: translateMode)
 
         var request = URLRequest(url: url)
         request.httpMethod = "POST"

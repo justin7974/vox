@@ -19,6 +19,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var hotKeyRef: EventHotKeyRef?
     private var setupWindow: SetupWindow?
     private var hotkeyMenuItem: NSMenuItem?
+    private var translateMenuItem: NSMenuItem?
+    private(set) var translateMode: Bool = false
     private(set) var hotkeyMode: String = "toggle" // "toggle" or "hold"
     private(set) var hotkeyKeyCode: UInt32 = UInt32(kVK_ANSI_Grave)
     private(set) var hotkeyModifiers: UInt32 = UInt32(controlKey)
@@ -125,6 +127,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(hkItem)
         menu.addItem(NSMenuItem.separator())
         menu.addItem(NSMenuItem(title: "Settings...", action: #selector(openSettings), keyEquivalent: ","))
+
+        let transItem = NSMenuItem(title: "Translate Mode (中→EN)", action: #selector(toggleTranslateMode), keyEquivalent: "t")
+        transItem.keyEquivalentModifierMask = []  // just "t" as shortcut when menu is open
+        translateMenuItem = transItem
+        menu.addItem(transItem)
+
         menu.addItem(NSMenuItem(title: "Edit Prompt", action: #selector(openPromptFile), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: "Open Config File", action: #selector(openConfigFile), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: "View Log", action: #selector(openLog), keyEquivalent: ""))
@@ -191,6 +199,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func openSettings() {
         showSetup()
+    }
+
+    @objc private func toggleTranslateMode() {
+        translateMode.toggle()
+        translateMenuItem?.state = translateMode ? .on : .off
+        NSLog("Vox: Translate mode = \(translateMode)")
     }
 
     @objc private func openPromptFile() {
@@ -328,6 +342,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func stopAndProcess() {
         recorder.onAudioLevel = nil
+
+        // Capture app context and translate mode NOW on the main thread,
+        // before dispatching to background.
+        let appContext = ContextDetector.detect()
+        let contextHint = ContextDetector.contextHint(for: appContext)
+        let isTranslate = translateMode
+
         guard let audioURL = recorder.stop() else {
             state = .idle
             updateStatusIcon()
@@ -392,8 +413,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 return
             }
 
-            debugLog("Step 2: PostProcessor start")
-            let cleanText = PostProcessor.process(rawText: rawText)
+            debugLog("Step 2: PostProcessor start (context: \(contextHint ?? "none"), translate: \(isTranslate))")
+            let cleanText = PostProcessor.process(rawText: rawText, contextHint: contextHint, translateMode: isTranslate)
             let postProcessed = cleanText.isEmpty ? rawText : cleanText
             debugLog("Step 2: PostProcessor result: [\(postProcessed)]")
 
