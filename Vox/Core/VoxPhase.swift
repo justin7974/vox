@@ -73,6 +73,7 @@ class VoxStateMachine {
         case (.matchingIntent, .executingAction):       return true
         case (.matchingIntent, .idle):                  return true
         case (.executingAction, .showingResult):        return true
+        case (.executingAction, .idle):                 return true
         case (.showingResult, .idle):                   return true
         default:                                        return false
         }

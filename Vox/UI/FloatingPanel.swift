@@ -7,8 +7,10 @@ import Cocoa
 class FloatingPanel: NSPanel {
     let blurView = NSVisualEffectView()
     let contentBox = NSView()
+    private let panelCornerRadius: CGFloat
 
     init(width: CGFloat, height: CGFloat, cornerRadius: CGFloat = 16) {
+        self.panelCornerRadius = cornerRadius
         let frame = NSRect(x: 0, y: 0, width: width, height: height)
         super.init(
             contentRect: frame,
@@ -25,34 +27,58 @@ class FloatingPanel: NSPanel {
         hidesOnDeactivate = false
         collectionBehavior = [.canJoinAllSpaces, .stationary]
 
-        // Build content
+        // Wrapper (shadow carrier)
         let wrapper = NSView(frame: frame)
         wrapper.wantsLayer = true
 
-        // Blur background
-        blurView.frame = wrapper.bounds
-        blurView.autoresizingMask = [.width, .height]
-        blurView.blendingMode = .behindWindow
-        blurView.material = .hudWindow
-        blurView.state = .active
-        blurView.wantsLayer = true
-        blurView.layer?.cornerRadius = cornerRadius
-        blurView.layer?.masksToBounds = true
-        wrapper.addSubview(blurView)
-
-        // Shadow
         let shadow = NSShadow()
         shadow.shadowBlurRadius = 20
         shadow.shadowColor = NSColor.black.withAlphaComponent(0.3)
         shadow.shadowOffset = NSSize(width: 0, height: -2)
         wrapper.shadow = shadow
 
-        // Content container
+        // Blur background — use maskImage for proper rounded corners.
+        // NSVisualEffectView renders at the window compositor level so
+        // CALayer.masksToBounds does NOT clip it. maskImage is the only
+        // reliable approach on macOS.
+        blurView.frame = wrapper.bounds
+        blurView.autoresizingMask = [.width, .height]
+        blurView.blendingMode = .behindWindow
+        blurView.material = .hudWindow
+        blurView.state = .active
+        blurView.maskImage = Self.roundedMask(radius: cornerRadius)
+        wrapper.addSubview(blurView)
+
+        // Content container (on top of blur, also clipped)
         contentBox.frame = wrapper.bounds
         contentBox.autoresizingMask = [.width, .height]
+        contentBox.wantsLayer = true
+        contentBox.layer?.cornerRadius = cornerRadius
+        contentBox.layer?.cornerCurve = .continuous
+        contentBox.layer?.masksToBounds = true
         wrapper.addSubview(contentBox)
 
         contentView = wrapper
+    }
+
+    // MARK: - Rounded Mask
+
+    /// Creates a stretchable mask image for NSVisualEffectView.
+    /// capInsets + resizingMode ensure the corners stay rounded as the view resizes.
+    private static func roundedMask(radius: CGFloat) -> NSImage {
+        let diameter = radius * 2 + 1  // minimal size: 2 corners + 1px stretch
+        let size = NSSize(width: diameter, height: diameter)
+        let image = NSImage(size: size, flipped: false) { rect in
+            let path = NSBezierPath(roundedRect: rect, xRadius: radius, yRadius: radius)
+            NSColor.black.setFill()
+            path.fill()
+            return true
+        }
+        image.capInsets = NSEdgeInsets(
+            top: radius, left: radius, bottom: radius, right: radius
+        )
+        image.resizingMode = .stretch
+        return image
     }
 
     // MARK: - Positioning

@@ -6,18 +6,22 @@ final class IntentService {
     private let log = LogService.shared
     private let llm = LLMService.shared
     private let actionService = ActionService.shared
-    private let confidenceThreshold: Double = 0.7
 
     private init() {}
 
     // MARK: - Public API
 
-    /// Match user text to an action. Returns nil if no match found.
-    /// Layer 1: Regex fast path (< 1ms)
-    /// Layer 2: LLM intent matching (200-2000ms)
+    /// Match user voice text to an action via LLM.
+    /// All intent recognition is handled by the LLM — no regex matching.
+    /// The prompt is dynamically built from action .md files.
     func match(text: String, context: ContextService.AppContext? = nil) async -> IntentMatch? {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
+
+        guard llm.isConfigured else {
+            log.warning("IntentService: LLM not configured, cannot match intent")
+            return nil
+        }
 
         let actions = actionService.getActions()
         guard !actions.isEmpty else {
@@ -25,206 +29,148 @@ final class IntentService {
             return nil
         }
 
-        // Layer 1: Regex fast path
-        if let regexMatch = regexMatch(text: trimmed, actions: actions) {
-            log.info("IntentService: Regex match -> \(regexMatch.action.id) (conf: \(regexMatch.confidence))")
-            return regexMatch
+        let systemPrompt = buildPrompt(actions: actions, context: context)
+        log.debug("IntentService: Sending to LLM: '\(trimmed)'")
+
+        let response = await llm.process(
+            rawText: trimmed,
+            customSystemPrompt: systemPrompt
+        )
+
+        guard let match = parseResponse(response, actions: actions) else {
+            log.info("IntentService: No match for '\(trimmed)'")
+            return nil
         }
 
-        // Layer 2: LLM intent matching
-        if llm.isConfigured {
-            let llmMatch = await llmMatch(text: trimmed, actions: actions, context: context)
-            if let match = llmMatch {
-                log.info("IntentService: LLM match -> \(match.action.id) (conf: \(match.confidence))")
-                if match.confidence >= confidenceThreshold {
-                    return match
-                } else {
-                    log.info("IntentService: LLM confidence \(match.confidence) below threshold \(confidenceThreshold)")
-                }
-            } else {
-                log.info("IntentService: LLM returned no match")
-            }
-        } else {
-            log.debug("IntentService: LLM not configured, skipping Layer 2")
-        }
-
-        return nil
+        log.info("IntentService: Matched '\(trimmed)' -> \(match.action.id) (conf: \(match.confidence))")
+        return match
     }
 
-    // MARK: - Layer 1: Regex Fast Path
+    // MARK: - Prompt Generation
 
-    private func regexMatch(text: String, actions: [ActionDefinition]) -> IntentMatch? {
-        let lower = text.lowercased()
-
-        for action in actions {
-            for trigger in action.triggers {
-                let triggerLower = trigger.lowercased()
-
-                // Check if text starts with or equals the trigger
-                if lower == triggerLower {
-                    // Exact match, no params (e.g. "静音", "锁屏", "剪贴板")
-                    let params = extractSimpleParams(action: action, trigger: trigger, fullText: text)
-                    return IntentMatch(action: action, params: params, confidence: 0.95)
-                }
-
-                if lower.hasPrefix(triggerLower) {
-                    // Trigger at start with remaining text as param
-                    let remaining = String(text.dropFirst(trigger.count)).trimmingCharacters(in: .whitespacesAndNewlines)
-                    if !remaining.isEmpty {
-                        let params = extractParamsFromRemaining(action: action, trigger: trigger, remaining: remaining)
-                        return IntentMatch(action: action, params: params, confidence: 0.9)
-                    }
-                }
-
-                // Check if trigger appears as a significant part of the text
-                if lower.contains(triggerLower) && triggerLower.count >= 2 {
-                    let remaining = lower.replacingOccurrences(of: triggerLower, with: "").trimmingCharacters(in: .whitespacesAndNewlines)
-                    if !remaining.isEmpty {
-                        let params = extractParamsFromRemaining(action: action, trigger: trigger, remaining: remaining)
-                        return IntentMatch(action: action, params: params, confidence: 0.85)
-                    } else {
-                        let params = extractSimpleParams(action: action, trigger: trigger, fullText: text)
-                        return IntentMatch(action: action, params: params, confidence: 0.9)
-                    }
-                }
-            }
-        }
-
-        return nil
-    }
-
-    private func extractSimpleParams(action: ActionDefinition, trigger: String, fullText: String) -> [String: String] {
-        var params: [String: String] = [:]
-
-        switch action.id {
-        case "volume_control":
-            let lower = trigger.lowercased()
-            if lower.contains("静音") || lower.contains("mute") { params["action"] = "mute" }
-            else if lower.contains("取消静音") || lower.contains("unmute") { params["action"] = "unmute" }
-            else if lower.contains("调高") { params["action"] = "up" }
-            else if lower.contains("调低") { params["action"] = "down" }
-        case "do_not_disturb":
-            let lower = trigger.lowercased()
-            if lower.contains("开") { params["action"] = "on" }
-            else if lower.contains("关") { params["action"] = "off" }
-            else { params["action"] = "toggle" }
-        default:
-            break
-        }
-
-        return params
-    }
-
-    private func extractParamsFromRemaining(action: ActionDefinition, trigger: String, remaining: String) -> [String: String] {
-        var params: [String: String] = [:]
-
-        switch action.id {
-        case "web_search":
-            params["query"] = remaining
-            // Detect engine from trigger
-            let triggerLower = trigger.lowercased()
-            if triggerLower.contains("youtube") || triggerLower.contains("油管") {
-                params["engine"] = "youtube"
-            } else if triggerLower.contains("github") {
-                params["engine"] = "github"
-            } else if triggerLower.contains("百度") {
-                params["engine"] = "baidu"
-            } else if triggerLower.contains("b站") || triggerLower.contains("bilibili") {
-                params["engine"] = "bilibili"
-            }
-        case "launch_app", "kill_process":
-            params["appName"] = remaining
-        case "volume_control":
-            let lower = trigger.lowercased()
-            if lower.contains("调到") || lower.contains("volume") {
-                params["action"] = "set"
-                params["level"] = remaining.filter { $0.isNumber }
-            } else if lower.contains("调高") {
-                params["action"] = "up"
-            } else if lower.contains("调低") {
-                params["action"] = "down"
-            }
-        case "window_manage":
-            params["position"] = remaining
-        case "translate":
-            params["targetLanguage"] = remaining
-        case "text_modify", "selection_modify":
-            params["instruction"] = remaining
-        default:
-            // Use first required param
-            if let firstParam = action.params.first(where: { $0.required }) {
-                params[firstParam.name] = remaining
-            }
-        }
-
-        return params
-    }
-
-    // MARK: - Layer 2: LLM Intent Matching
-
-    private func llmMatch(text: String, actions: [ActionDefinition], context: ContextService.AppContext?) async -> IntentMatch? {
-        let systemPrompt = buildIntentSystemPrompt(actions: actions, context: context)
-        let result = await llm.process(rawText: text, contextHint: nil, translateMode: false, customSystemPrompt: systemPrompt)
-
-        // Parse LLM response as JSON
-        return parseLLMResponse(result, actions: actions, originalText: text)
-    }
-
-    private func buildIntentSystemPrompt(actions: [ActionDefinition], context: ContextService.AppContext?) -> String {
+    /// Build the intent recognition prompt from action definitions.
+    /// This is the single source of truth — edit .md files to change behavior.
+    private func buildPrompt(actions: [ActionDefinition], context: ContextService.AppContext?) -> String {
         var prompt = """
-        你是 Vox Launcher 的意图识别引擎。你的任务是分析用户的语音指令，匹配到正确的操作。
+        你是 Vox 语音指令路由器。用户通过语音发出指令，经 ASR 转写后交给你判断意图。
 
-        ## 可用操作列表
+        你的唯一任务：理解用户意图 → 匹配操作 → 提取参数 → 返回 JSON。
+
+        ## 可用操作
 
         """
 
         for action in actions {
-            let triggers = action.triggers.joined(separator: ", ")
-            let paramDesc = action.params.map { "\($0.name)(\($0.type), \($0.required ? "必填" : "可选"))" }.joined(separator: ", ")
+            let paramList = action.params.map { p in
+                "\(p.name): \(p.type)\(p.required ? "" : ", 可选")"
+            }.joined(separator: "; ")
+
             prompt += """
-            ### \(action.id): \(action.name)
-            - 触发词: \(triggers)
-            - 参数: \(paramDesc.isEmpty ? "无" : paramDesc)
-            - 说明: \(action.description)
+            **\(action.id)** — \(action.name)
+            \(action.description)
+            参数: \(paramList.isEmpty ? "无" : paramList)
+
+            """
+        }
+
+        // Installed apps for launch_app / kill_process recognition
+        let apps = actionService.installedAppNames
+        if !apps.isEmpty {
+            prompt += """
+
+            ## 已安装应用
+            \(apps.joined(separator: ", "))
 
             """
         }
 
         prompt += """
 
-        ## 匹配规则
+        ## 规则
 
-        1. 优先精确匹配触发词
-        2. 然后语义理解用户意图
-        3. 从用户指令中提取参数
-        4. confidence 为 0-1 的浮点数，表示匹配置信度
-        5. 如果无法匹配任何操作，返回 action_id 为 "none"
+        ### 口语处理
+        忽略所有口语前缀（帮我、请、我想、能不能、麻烦 等），聚焦核心意图。
 
-        ## 输出格式
+        ### ASR 纠错（极其重要）
+        语音转文字经常出错，你必须根据已安装应用列表智能纠正。常见错误模式：
+        - 发音相似：cloud → Claude, dress → Drafts, know → Notes, car → Kar, chrome → Chrome
+        - 缺字少字：claud → Claude, draf → Drafts, safa → Safari
+        - 中英混淆：克劳德 → Claude, 飞书 → Feishu
+        - 大小写丢失：claude → Claude, safari → Safari
+        收到疑似应用名时，始终在已安装列表中找发音最接近的匹配。宁可猜测匹配也不要返回 none。
 
-        严格输出 JSON，不要输出任何其他文字：
-        {"action_id": "xxx", "params": {"key": "value"}, "confidence": 0.9}
+        ### launch_app / kill_process
+        appName 必须是已安装列表中的真实应用名（区分大小写）。
+        中文别名：浏览器→Safari、终端→Terminal、备忘录→Notes、微信→WeChat、设置→System Settings、邮件→Mail、日历→Calendar、计算器→Calculator、文件管理器→Finder
 
-        如果不匹配：
-        {"action_id": "none", "params": {}, "confidence": 0.0}
+        ### web_search
+        引擎检测：
+        - YouTube/油管/看视频 → engine: "youtube"
+        - B站/bilibili/哔哩哔哩 → engine: "bilibili"
+        - GitHub → engine: "github"
+        - 百度 → engine: "baidu"
+        - 未指定 → 不传 engine（默认 Google）
+
+        **query 必须是优化后的搜索关键词**，不是用户原话。你要像搜索引擎助手一样重构 query：
+        - 去掉口语动词（搜索、搜一下、找、看、查）
+        - 去掉无意义修饰（最新的、帮我找、有没有）
+        - 提取核心搜索意图，转化为搜索引擎友好的关键词
+        - 中文人名/专有名词如果在英文平台搜索，应翻译为英文
+        例如：
+        - "用YouTube搜索詹姆斯最新的视频" → query: "LeBron James highlights 2025", engine: "youtube"
+        - "帮我在油管上搜一下怎么做蛋糕" → query: "how to bake a cake tutorial", engine: "youtube"
+        - "搜索macOS Sequoia有什么新功能" → query: "macOS Sequoia new features"
+        - "百度一下附近有什么好吃的" → query: "附近美食推荐", engine: "baidu"
+        - "在B站找一下原神攻略" → query: "原神攻略", engine: "bilibili"
+
+        ### 其他参数
+        - volume_control 的 action：mute / unmute / up / down / set（set 时需 level 0-100）
+        - window_manage 的 position：left / right / fullscreen / minimize
+        - do_not_disturb 的 action：on / off / toggle
+        - 无法匹配任何操作 → action_id: "none"
+
+        ## 示例
+
+        "帮我打开Safari" → {"action_id":"launch_app","params":{"appName":"Safari"},"confidence":0.95}
+        "打开cloud" → {"action_id":"launch_app","params":{"appName":"Claude"},"confidence":0.9}
+        "打开cloud code" → {"action_id":"launch_app","params":{"appName":"Claude"},"confidence":0.85}
+        "打开dress" → {"action_id":"launch_app","params":{"appName":"Drafts"},"confidence":0.85}
+        "打开Claud" → {"action_id":"launch_app","params":{"appName":"Claude"},"confidence":0.9}
+        "用YouTube搜索詹姆斯最新的视频" → {"action_id":"web_search","params":{"query":"LeBron James latest highlights","engine":"youtube"},"confidence":0.95}
+        "帮我在油管搜一下怎么做蛋糕" → {"action_id":"web_search","params":{"query":"how to bake a cake tutorial","engine":"youtube"},"confidence":0.95}
+        "搜索Swift并发编程" → {"action_id":"web_search","params":{"query":"Swift concurrency programming"},"confidence":0.95}
+        "声音小一点" → {"action_id":"volume_control","params":{"action":"down"},"confidence":0.95}
+        "窗口放左边" → {"action_id":"window_manage","params":{"position":"left"},"confidence":0.9}
+        "静音" → {"action_id":"volume_control","params":{"action":"mute"},"confidence":0.95}
+        "锁屏" → {"action_id":"lock_screen","params":{},"confidence":0.95}
+        "关掉Safari" → {"action_id":"kill_process","params":{"appName":"Safari"},"confidence":0.95}
+        "剪贴板" → {"action_id":"clipboard_history","params":{},"confidence":0.95}
+        "翻译成英文" → {"action_id":"translate","params":{"targetLanguage":"English"},"confidence":0.95}
+        "今天天气怎么样" → {"action_id":"none","params":{},"confidence":0.0}
+
+        ## 输出
+
+        严格只输出 JSON，不要任何其他文字：
+        {"action_id":"xxx","params":{...},"confidence":0.9}
         """
 
         if let ctx = context {
-            prompt += "\n\n当前上下文：用户正在 \(ctx.appName) 中。"
+            prompt += "\n\n当前上下文：用户正在 \(ctx.appName)。"
             if let url = ctx.url {
-                prompt += " 当前网页: \(url)"
+                prompt += " 网页: \(url)"
             }
         }
 
         return prompt
     }
 
-    private func parseLLMResponse(_ response: String, actions: [ActionDefinition], originalText: String) -> IntentMatch? {
-        // Try to extract JSON from the response
+    // MARK: - Response Parsing
+
+    private func parseResponse(_ response: String, actions: [ActionDefinition]) -> IntentMatch? {
         let jsonString = extractJSON(from: response)
         guard let data = jsonString.data(using: .utf8),
               let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            log.warning("IntentService: Failed to parse LLM response as JSON: \(response.prefix(200))")
+            log.warning("IntentService: Failed to parse LLM JSON: \(response.prefix(200))")
             return nil
         }
 
@@ -236,7 +182,7 @@ final class IntentService {
         guard confidence > 0 else { return nil }
 
         guard let action = actionService.action(byId: actionId) else {
-            log.warning("IntentService: LLM returned unknown action_id: \(actionId)")
+            log.warning("IntentService: Unknown action_id from LLM: \(actionId)")
             return nil
         }
 
@@ -251,21 +197,19 @@ final class IntentService {
     }
 
     private func extractJSON(from text: String) -> String {
-        // Try to find JSON object in the response
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
 
-        // If already valid JSON
         if trimmed.hasPrefix("{") && trimmed.hasSuffix("}") {
             return trimmed
         }
 
-        // Try to find JSON within markdown code blocks
+        // Markdown code block
         if let start = trimmed.range(of: "```json"),
            let end = trimmed.range(of: "```", range: start.upperBound..<trimmed.endIndex) {
             return String(trimmed[start.upperBound..<end.lowerBound]).trimmingCharacters(in: .whitespacesAndNewlines)
         }
 
-        // Try to find first { ... } block
+        // First { ... } block
         if let start = trimmed.firstIndex(of: "{"),
            let end = trimmed.lastIndex(of: "}") {
             return String(trimmed[start...end])

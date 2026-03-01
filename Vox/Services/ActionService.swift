@@ -8,6 +8,13 @@ final class ActionService {
     private let actionsDir: String
     private(set) var actions: [ActionDefinition] = []
 
+    /// Map of lowercased app display name → full path to .app bundle.
+    /// Populated at startup by scanning /Applications and /System/Applications.
+    private var installedApps: [String: String] = [:]
+
+    /// Sorted list of installed app display names (for LLM prompt).
+    private(set) var installedAppNames: [String] = []
+
     private init() {
         actionsDir = NSHomeDirectory() + "/Library/Application Support/Vox/Actions"
     }
@@ -41,6 +48,37 @@ final class ActionService {
 
         actions = loaded
         log.info("ActionService: Loaded \(loaded.count) actions")
+    }
+
+    /// Scan installed applications and build the name → path lookup.
+    /// Called once at startup from AppDelegate.
+    func scanInstalledApps() {
+        var map: [String: String] = [:]
+
+        let searchDirs = [
+            "/Applications",
+            "/System/Applications",
+            "/System/Applications/Utilities",
+            NSHomeDirectory() + "/Applications",
+        ]
+
+        let fm = FileManager.default
+        for dir in searchDirs {
+            guard let items = try? fm.contentsOfDirectory(atPath: dir) else { continue }
+            for item in items where item.hasSuffix(".app") {
+                let appPath = (dir as NSString).appendingPathComponent(item)
+                let displayName = (item as NSString).deletingPathExtension
+                map[displayName.lowercased()] = appPath
+            }
+        }
+
+        installedApps = map
+        installedAppNames = map.keys.sorted().map { name in
+            // Return the original-cased name from the path
+            let path = map[name]!
+            return ((path as NSString).lastPathComponent as NSString).deletingPathExtension
+        }
+        log.info("ActionService: Scanned \(map.count) installed apps")
     }
 
     /// Get all loaded action definitions.
@@ -106,47 +144,159 @@ final class ActionService {
         return ActionResult(success: true, message: "Opened: \(url.host ?? urlString)")
     }
 
+    // Common app name aliases (Chinese/phonetic → macOS app name)
+    private static let appAliases: [String: String] = [
+        // Browsers
+        "浏览器": "Safari", "safari浏览器": "Safari",
+        "谷歌浏览器": "Google Chrome", "谷歌": "Google Chrome", "chrome浏览器": "Google Chrome",
+        "火狐": "Firefox", "火狐浏览器": "Firefox",
+        // Communication
+        "微信": "WeChat", "飞书": "Feishu", "钉钉": "DingTalk", "企业微信": "企业微信",
+        // System apps
+        "终端": "Terminal", "记事本": "TextEdit", "文本编辑": "TextEdit",
+        "备忘录": "Notes", "日历": "Calendar", "邮件": "Mail",
+        "音乐": "Music", "照片": "Photos", "计算器": "Calculator",
+        "系统设置": "System Settings", "系统偏好设置": "System Preferences",
+        "设置": "System Settings", "访达": "Finder", "文件管理器": "Finder",
+        "预览": "Preview", "活动监视器": "Activity Monitor",
+        "地图": "Maps", "天气": "Weather", "提醒事项": "Reminders",
+        "快捷指令": "Shortcuts", "信息": "Messages", "消息": "Messages",
+        // Dev tools
+        "代码编辑器": "Visual Studio Code", "vscode": "Visual Studio Code",
+    ]
+
     private func executeApp(action: ActionDefinition, params: [String: String]) throws -> ActionResult {
         guard let appName = params["appName"], !appName.isEmpty else {
             throw VoxError.actionFailed("Missing app name")
         }
 
-        // First check if app is already running — just activate it
+        // Strip trailing punctuation/whitespace that STT might add
+        let cleaned = appName.trimmingCharacters(in: .whitespacesAndNewlines.union(.punctuationCharacters))
+        log.info("ActionService: executeApp raw='\(appName)' cleaned='\(cleaned)'")
+
+        // Resolve: aliases → installed apps (exact) → installed apps (fuzzy) → raw name
+        let resolvedName = resolveAppName(cleaned)
+        log.info("ActionService: resolved='\(resolvedName)'")
+
+        // 1. Check if app is already running — activate it
         let running = NSWorkspace.shared.runningApplications
-        if let app = running.first(where: { $0.localizedName?.lowercased() == appName.lowercased() }) {
+        if let app = running.first(where: {
+            guard let name = $0.localizedName?.lowercased() else { return false }
+            return name == resolvedName.lowercased() || name == cleaned.lowercased()
+        }) {
             app.activate()
-            return ActionResult(success: true, message: "Switched to \(appName)")
+            log.info("ActionService: Activated running app '\(app.localizedName ?? "")'")
+            return ActionResult(success: true, message: "Switched to \(app.localizedName ?? appName)")
         }
 
-        // Try to find and launch from /Applications
+        // 2. Try installed apps path (from scan)
+        if let path = installedApps[resolvedName.lowercased()] ?? installedApps[cleaned.lowercased()] {
+            log.info("ActionService: Found in installed apps: \(path)")
+            NSWorkspace.shared.open(URL(fileURLWithPath: path))
+            return ActionResult(success: true, message: "Launched \(resolvedName)")
+        }
+
+        // 3. Try direct paths
         let searchPaths = [
-            "/Applications/\(appName).app",
-            "/Applications/\(appName)",
-            "/System/Applications/\(appName).app",
-            "/System/Applications/Utilities/\(appName).app",
+            "/Applications/\(resolvedName).app",
+            "/System/Applications/\(resolvedName).app",
+            "/System/Applications/Utilities/\(resolvedName).app",
+            "/Applications/\(cleaned).app",
+            "/System/Applications/\(cleaned).app",
         ]
 
         for path in searchPaths {
-            let url = URL(fileURLWithPath: path)
             if FileManager.default.fileExists(atPath: path) {
-                let config = NSWorkspace.OpenConfiguration()
-                NSWorkspace.shared.openApplication(at: url, configuration: config)
-                return ActionResult(success: true, message: "Launched \(appName)")
+                log.info("ActionService: Found at \(path)")
+                NSWorkspace.shared.open(URL(fileURLWithPath: path))
+                return ActionResult(success: true, message: "Launched \(resolvedName)")
             }
         }
 
-        // Last resort: try open -a via shell
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
-        process.arguments = ["-a", appName]
-        try process.run()
-        process.waitUntilExit()
-
-        if process.terminationStatus == 0 {
-            return ActionResult(success: true, message: "Launched \(appName)")
+        // 4. Fallback: open -a (handles partial names, localized names)
+        log.info("ActionService: Trying 'open -a \(resolvedName)'")
+        if tryOpenApp(resolvedName) {
+            return ActionResult(success: true, message: "Launched \(resolvedName)")
+        }
+        if resolvedName != cleaned {
+            log.info("ActionService: Trying 'open -a \(cleaned)'")
+            if tryOpenApp(cleaned) {
+                return ActionResult(success: true, message: "Launched \(cleaned)")
+            }
         }
 
-        throw VoxError.actionFailed("Could not find app: \(appName)")
+        throw VoxError.actionFailed("找不到应用: \(appName)")
+    }
+
+    /// Resolve a possibly garbled app name to the real app name.
+    /// Priority: static aliases → exact installed match → fuzzy installed match → original
+    private func resolveAppName(_ name: String) -> String {
+        let lower = name.lowercased()
+
+        // 1. Static aliases (Chinese → English)
+        if let alias = ActionService.appAliases[lower] {
+            return alias
+        }
+
+        // 2. Exact match in installed apps
+        if installedApps[lower] != nil {
+            // Return the properly-cased name
+            let path = installedApps[lower]!
+            return ((path as NSString).lastPathComponent as NSString).deletingPathExtension
+        }
+
+        // 3. Fuzzy match against installed apps
+        // Handles ASR errors like "cloud code" → "Claude Code"
+        if let fuzzyMatch = fuzzyMatchApp(lower) {
+            return fuzzyMatch
+        }
+
+        return name
+    }
+
+    /// Word-level match against installed app names.
+    /// Only matches when ALL words in the query appear in the app name (order-independent).
+    /// This avoids false positives like "cloud code" → "Cloud Station".
+    private func fuzzyMatchApp(_ query: String) -> String? {
+        let queryWords = query.lowercased().split(separator: " ").map(String.init)
+        guard !queryWords.isEmpty else { return nil }
+
+        var bestMatch: (name: String, path: String, matchedWords: Int)?
+
+        for (installedLower, path) in installedApps {
+            let appWords = installedLower.split(separator: " ").map(String.init)
+            // Count how many query words appear in the app name
+            let matched = queryWords.filter { qw in
+                appWords.contains { aw in aw == qw || aw.hasPrefix(qw) || qw.hasPrefix(aw) }
+            }.count
+            // ALL query words must match
+            if matched == queryWords.count && matched > (bestMatch?.matchedWords ?? 0) {
+                bestMatch = (installedLower, path, matched)
+            }
+        }
+
+        if let match = bestMatch {
+            let realName = ((match.path as NSString).lastPathComponent as NSString).deletingPathExtension
+            log.info("ActionService: Word-matched '\(query)' → '\(realName)' (\(match.matchedWords) words)")
+            return realName
+        }
+
+        return nil
+    }
+
+    private func tryOpenApp(_ name: String) -> Bool {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/open")
+        process.arguments = ["-a", name]
+        process.standardOutput = FileHandle.nullDevice
+        process.standardError = FileHandle.nullDevice
+        do {
+            try process.run()
+            process.waitUntilExit()
+            return process.terminationStatus == 0
+        } catch {
+            return false
+        }
     }
 
     private func executeSystem(action: ActionDefinition, params: [String: String]) async throws -> ActionResult {
@@ -321,14 +471,18 @@ final class ActionService {
             throw VoxError.actionFailed("Missing app name to kill")
         }
 
+        // Also resolve the name for kill_process
+        let resolved = resolveAppName(appName)
+
         let running = NSWorkspace.shared.runningApplications
         let matches = running.filter {
-            $0.localizedName?.lowercased() == appName.lowercased()
+            guard let name = $0.localizedName?.lowercased() else { return false }
+            return name == resolved.lowercased() || name == appName.lowercased()
         }
 
         if let app = matches.first {
             app.forceTerminate()
-            return ActionResult(success: true, message: "Killed \(appName)")
+            return ActionResult(success: true, message: "Killed \(app.localizedName ?? appName)")
         }
 
         throw VoxError.actionFailed("App not running: \(appName)")

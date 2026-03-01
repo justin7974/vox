@@ -1001,13 +1001,13 @@ class SetupWindow: NSObject, NSWindowDelegate {
         ])
 
         // Title
-        let title = NSTextField(labelWithString: "History Settings")
+        let title = NSTextField(labelWithString: "Dictation Settings")
         title.font = .systemFont(ofSize: 24, weight: .bold)
         title.textColor = .labelColor
         title.alignment = .center
         stack.addArrangedSubview(title)
 
-        let subtitle = NSTextField(wrappingLabelWithString: "Save your voice input results so you can find and copy them later.")
+        let subtitle = NSTextField(wrappingLabelWithString: "Configure history retention and the edit window for voice dictation.")
         subtitle.font = .systemFont(ofSize: 14)
         subtitle.textColor = .secondaryLabelColor
         subtitle.alignment = .center
@@ -1060,8 +1060,49 @@ class SetupWindow: NSObject, NSWindowDelegate {
         info.textColor = .tertiaryLabelColor
         cardStack.addArrangedSubview(info)
 
+        // Separator
+        let sep = NSBox()
+        sep.boxType = .separator
+        cardStack.addArrangedSubview(sep)
+
+        // Edit window duration
+        let editRow = NSStackView()
+        editRow.orientation = .horizontal
+        editRow.spacing = 12
+        editRow.alignment = .centerY
+
+        let editLabel = NSTextField(labelWithString: "Edit window after dictation:")
+        editLabel.font = .systemFont(ofSize: 15)
+        editLabel.textColor = .labelColor
+        editRow.addArrangedSubview(editLabel)
+
+        let editPopup = NSPopUpButton()
+        editPopup.addItems(withTitles: ["Off", "1 second", "3 seconds", "5 seconds"])
+        editPopup.font = .systemFont(ofSize: 13)
+
+        let currentDuration = ConfigService.shared.editWindowDuration
+        let currentEnabled = ConfigService.shared.editWindowEnabled
+        if !currentEnabled || currentDuration <= 0 {
+            editPopup.selectItem(at: 0)
+        } else if currentDuration <= 1.5 {
+            editPopup.selectItem(at: 1)
+        } else if currentDuration <= 4.0 {
+            editPopup.selectItem(at: 2)
+        } else {
+            editPopup.selectItem(at: 3)
+        }
+        editWindowDurationPopup = editPopup
+        editRow.addArrangedSubview(editPopup)
+
+        cardStack.addArrangedSubview(editRow)
+
+        let editInfo = NSTextField(wrappingLabelWithString: "After dictating, re-press the hotkey within the edit window\nto modify the text you just spoke (e.g., \"make it more formal\").")
+        editInfo.font = .systemFont(ofSize: 12)
+        editInfo.textColor = .tertiaryLabelColor
+        cardStack.addArrangedSubview(editInfo)
+
         stack.addArrangedSubview(card)
-        card.widthAnchor.constraint(equalToConstant: 440).isActive = true
+        card.widthAnchor.constraint(equalToConstant: 520).isActive = true
 
         return container
     }
@@ -1080,6 +1121,19 @@ class SetupWindow: NSObject, NSWindowDelegate {
             HistoryService.shared.retentionDays = days
             NSLog("Vox: History settings saved — enabled, retention: \(days == 0 ? "forever" : "\(days) days")")
         }
+
+        // Save edit window duration
+        let ewIndex = editWindowDurationPopup?.indexOfSelectedItem ?? 2
+        let durationMap: [Int: (enabled: Bool, duration: Double)] = [
+            0: (false, 0),
+            1: (true, 1.0),
+            2: (true, 3.0),
+            3: (true, 5.0),
+        ]
+        let (enabled, duration) = durationMap[ewIndex] ?? (true, 3.0)
+        ConfigService.shared.write(key: "editWindowEnabled", value: enabled)
+        ConfigService.shared.write(key: "editWindowDuration", value: duration)
+        NSLog("Vox: Edit window: enabled=\(enabled), duration=\(duration)s")
     }
 
     // MARK: - Step: Launcher Settings
@@ -1152,39 +1206,8 @@ class SetupWindow: NSObject, NSWindowDelegate {
 
         cardStack.addArrangedSubview(hotkeyRow)
 
-        // Edit window duration
-        let editRow = NSStackView()
-        editRow.orientation = .horizontal
-        editRow.spacing = 12
-        editRow.alignment = .centerY
-
-        let editLabel = NSTextField(labelWithString: "Edit window after dictation:")
-        editLabel.font = .systemFont(ofSize: 15)
-        editLabel.textColor = .labelColor
-        editRow.addArrangedSubview(editLabel)
-
-        let popup = NSPopUpButton()
-        popup.addItems(withTitles: ["Off", "1 second", "3 seconds", "5 seconds"])
-        popup.font = .systemFont(ofSize: 13)
-
-        let currentDuration = ConfigService.shared.editWindowDuration
-        let currentEnabled = ConfigService.shared.editWindowEnabled
-        if !currentEnabled || currentDuration <= 0 {
-            popup.selectItem(at: 0)
-        } else if currentDuration <= 1.5 {
-            popup.selectItem(at: 1)
-        } else if currentDuration <= 4.0 {
-            popup.selectItem(at: 2)
-        } else {
-            popup.selectItem(at: 3)
-        }
-        editWindowDurationPopup = popup
-        editRow.addArrangedSubview(popup)
-
-        cardStack.addArrangedSubview(editRow)
-
         // Info text
-        let info = NSTextField(wrappingLabelWithString: "After dictating, you can re-press the dictation hotkey within the edit window\nto modify the text you just spoke (e.g., \"make it more formal\").")
+        let info = NSTextField(wrappingLabelWithString: "Hold the Launcher hotkey and speak a command.\nRelease to execute. You can customize actions in ~/Library/Application Support/Vox/Actions/.")
         info.font = .systemFont(ofSize: 12)
         info.textColor = .tertiaryLabelColor
         cardStack.addArrangedSubview(info)
@@ -1208,19 +1231,6 @@ class SetupWindow: NSObject, NSWindowDelegate {
             ConfigService.shared.write(key: "launcherHotkeyModifiers", value: Int(selectedLauncherModifiers ?? 0))
             NSLog("Vox: Launcher hotkey saved")
         }
-
-        // Save edit window duration
-        let popupIndex = editWindowDurationPopup?.indexOfSelectedItem ?? 2
-        let durationMap: [Int: (enabled: Bool, duration: Double)] = [
-            0: (false, 0),
-            1: (true, 1.0),
-            2: (true, 3.0),
-            3: (true, 5.0),
-        ]
-        let (enabled, duration) = durationMap[popupIndex] ?? (true, 3.0)
-        ConfigService.shared.write(key: "editWindowEnabled", value: enabled)
-        ConfigService.shared.write(key: "editWindowDuration", value: duration)
-        NSLog("Vox: Edit window: enabled=\(enabled), duration=\(duration)s")
     }
 
     // MARK: - Step: Complete
@@ -1463,6 +1473,7 @@ class SetupWindow: NSObject, NSWindowDelegate {
 
         if let jsonData = try? JSONSerialization.data(withJSONObject: config, options: [.prettyPrinted, .sortedKeys]) {
             try? jsonData.write(to: URL(fileURLWithPath: configPath))
+            ConfigService.shared.reload()  // sync in-memory raw dict with file
             NSLog("Vox: Config saved")
         }
     }

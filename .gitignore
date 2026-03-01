@@ -5,3 +5,4 @@ build/
 *.xcworkspace
 xcuserdata/
 DerivedData/
+docs/product/
