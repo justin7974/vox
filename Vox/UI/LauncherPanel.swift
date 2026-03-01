@@ -73,9 +73,14 @@ class LauncherPanel {
 
         transcriptionLabel?.stringValue = "\"\(text)\""
         transcriptionLabel?.isHidden = false
-        statusLabel?.stringValue = "匹配中…"
-        statusLabel?.textColor = .secondaryLabelColor
-        statusLabel?.isHidden = false
+
+        // Show "匹配中…" in the action row (below transcription) to avoid overlap with statusLabel
+        actionIcon?.stringValue = "●"
+        actionIcon?.textColor = .tertiaryLabelColor
+        actionIcon?.isHidden = false
+        actionLabel?.stringValue = "匹配中…"
+        actionLabel?.textColor = .secondaryLabelColor
+        actionLabel?.isHidden = false
 
         panel?.resizeTo(height: 96)
     }

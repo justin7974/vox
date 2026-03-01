@@ -11,7 +11,7 @@ params:
   - name: url
     type: string
     required: true
-template: "{url}"
+template: {url}
 ---
 打开指定网站。根据用户说的网站名称，匹配到正确的 URL 并打开。
 
