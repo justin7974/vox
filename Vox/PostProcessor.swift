@@ -2,23 +2,7 @@ import Foundation
 
 enum PostProcessor {
 
-    // MARK: - Debug logging
-
-    private static func debugLog(_ msg: String) {
-        let logPath = NSHomeDirectory() + "/.vox/debug.log"
-        let ts = ISO8601DateFormatter().string(from: Date())
-        let line = "[PP \(ts)] \(msg)\n"
-        NSLog("Vox: \(msg)")
-        if let data = line.data(using: .utf8) {
-            if FileManager.default.fileExists(atPath: logPath) {
-                if let fh = FileHandle(forWritingAtPath: logPath) {
-                    fh.seekToEndOfFile(); fh.write(data); fh.closeFile()
-                }
-            } else {
-                FileManager.default.createFile(atPath: logPath, contents: data)
-            }
-        }
-    }
+    private static let log = LogService.shared
 
     // MARK: - System Prompt (based on Typeless architecture analysis)
 
@@ -131,22 +115,15 @@ enum PostProcessor {
     }
 
     private static func loadConfig() -> APIConfig? {
-        let configPath = NSHomeDirectory() + "/.vox/config.json"
-        guard let data = FileManager.default.contents(atPath: configPath),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let provider = json["provider"] as? String,
-              let providerConfig = json[provider] as? [String: Any],
-              let baseURL = providerConfig["baseURL"] as? String,
-              let apiKey = providerConfig["apiKey"] as? String,
-              let model = providerConfig["model"] as? String else {
-            NSLog("Vox: Failed to load config from ~/.vox/config.json")
+        let cfg = ConfigService.shared
+        guard let providerName = cfg.llmProvider,
+              let pc = cfg.llmProviderConfig(for: providerName) else {
+            NSLog("Vox: Failed to load LLM config")
             return nil
         }
-
-        let userContext = json["userContext"] as? String ?? ""
-        let explicitFormat = providerConfig["format"] as? String
-        let format = detectFormat(baseURL: baseURL, explicit: explicitFormat)
-        return APIConfig(baseURL: baseURL, apiKey: apiKey, model: model, userContext: userContext, format: format)
+        let format = detectFormat(baseURL: pc.baseURL, explicit: pc.format)
+        return APIConfig(baseURL: pc.baseURL, apiKey: pc.apiKey, model: pc.model,
+                         userContext: cfg.userContext ?? "", format: format)
     }
 
     /// Prompt file with user instructions. Lines starting with # are comments
@@ -252,17 +229,17 @@ enum PostProcessor {
 
     static func process(rawText: String, contextHint: String? = nil, translateMode: Bool = false) -> String {
         guard let config = loadConfig() else {
-            debugLog("No LLM config, skipping post-processing")
+            log.debug("No LLM config, skipping post-processing")
             return rawText
         }
 
-        debugLog("Using API: \(config.baseURL) model: \(config.model) translate: \(translateMode)")
+        log.debug("Using API: \(config.baseURL) model: \(config.model) translate: \(translateMode)")
         if let hint = contextHint {
-            debugLog("Context hint: \(hint)")
+            log.debug("Context hint: \(hint)")
         }
         let result = callAPI(rawText: rawText, config: config, contextHint: contextHint, translateMode: translateMode)
         if result.isEmpty {
-            debugLog("LLM failed, returning raw text")
+            log.debug("LLM failed, returning raw text")
             DispatchQueue.main.async {
                 AppDelegate.showNotification(title: "Vox", message: "LLM post-processing failed. Using raw transcription.")
             }
@@ -273,7 +250,7 @@ enum PostProcessor {
 
     private static func callAPI(rawText: String, config: APIConfig, contextHint: String? = nil, translateMode: Bool = false) -> String {
         guard let url = URL(string: config.baseURL) else {
-            debugLog("Invalid API URL: \(config.baseURL)")
+            log.debug("Invalid API URL: \(config.baseURL)")
             return ""
         }
 
@@ -288,7 +265,7 @@ enum PostProcessor {
 
         switch config.format {
         case .anthropic:
-            debugLog("Using Anthropic format")
+            log.debug("Using Anthropic format")
             request.setValue(config.apiKey, forHTTPHeaderField: "x-api-key")
             request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
             body = [
@@ -301,7 +278,7 @@ enum PostProcessor {
             ]
 
         case .openai:
-            debugLog("Using OpenAI format")
+            log.debug("Using OpenAI format")
             request.setValue("Bearer \(config.apiKey)", forHTTPHeaderField: "Authorization")
             body = [
                 "model": config.model,
@@ -315,7 +292,7 @@ enum PostProcessor {
         }
 
         guard let httpBody = try? JSONSerialization.data(withJSONObject: body) else {
-            debugLog("Failed to serialize request body")
+            log.debug("Failed to serialize request body")
             return ""
         }
         request.httpBody = httpBody
@@ -327,30 +304,30 @@ enum PostProcessor {
             defer { semaphore.signal() }
 
             if let error = error {
-                debugLog("API error: \(error.localizedDescription)")
+                log.debug("API error: \(error.localizedDescription)")
                 return
             }
 
             if let httpResponse = response as? HTTPURLResponse {
-                debugLog("API HTTP status: \(httpResponse.statusCode)")
+                log.debug("API HTTP status: \(httpResponse.statusCode)")
             }
 
             guard let data = data else {
-                debugLog("No response data")
+                log.debug("No response data")
                 return
             }
 
             let rawResponse = String(data: data, encoding: .utf8) ?? "???"
-            debugLog("API raw response: \(String(rawResponse.prefix(500)))")
+            log.debug("API raw response: \(String(rawResponse.prefix(500)))")
 
             guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                debugLog("Failed to parse JSON")
+                log.debug("Failed to parse JSON")
                 return
             }
 
             if let errorInfo = json["error"] as? [String: Any],
                let message = errorInfo["message"] as? String {
-                debugLog("API returned error: \(message)")
+                log.debug("API returned error: \(message)")
                 return
             }
 
@@ -362,12 +339,12 @@ enum PostProcessor {
                     let textBlock = content.first(where: { ($0["type"] as? String) == "text" }) ?? content.first
                     if let text = textBlock?["text"] as? String {
                         result = text.trimmingCharacters(in: .whitespacesAndNewlines)
-                        debugLog("API result: [\(result)]")
+                        log.debug("API result: [\(result)]")
                     } else {
-                        debugLog("Could not extract text from Anthropic content blocks")
+                        log.debug("Could not extract text from Anthropic content blocks")
                     }
                 } else {
-                    debugLog("Could not extract content array from Anthropic response")
+                    log.debug("Could not extract content array from Anthropic response")
                 }
 
             case .openai:
@@ -375,9 +352,9 @@ enum PostProcessor {
                    let message = choices.first?["message"] as? [String: Any],
                    let text = message["content"] as? String {
                     result = text.trimmingCharacters(in: .whitespacesAndNewlines)
-                    debugLog("API result: [\(result)]")
+                    log.debug("API result: [\(result)]")
                 } else {
-                    debugLog("Could not extract choices[0].message.content from OpenAI response")
+                    log.debug("Could not extract choices[0].message.content from OpenAI response")
                 }
             }
         }

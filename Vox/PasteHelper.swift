@@ -1,24 +1,10 @@
 import Cocoa
 
 enum PasteHelper {
-    private static func debugLog(_ msg: String) {
-        let logPath = NSHomeDirectory() + "/.vox/debug.log"
-        let ts = ISO8601DateFormatter().string(from: Date())
-        let line = "[PH \(ts)] \(msg)\n"
-        NSLog("Vox: \(msg)")
-        if let data = line.data(using: .utf8) {
-            if FileManager.default.fileExists(atPath: logPath) {
-                if let fh = FileHandle(forWritingAtPath: logPath) {
-                    fh.seekToEndOfFile(); fh.write(data); fh.closeFile()
-                }
-            } else {
-                FileManager.default.createFile(atPath: logPath, contents: data)
-            }
-        }
-    }
+    private static let log = LogService.shared
 
     static func paste(text: String) {
-        debugLog("paste called, length=\(text.count)")
+        log.debug("paste called, length=\(text.count)")
 
         // Always use clipboard + Cmd+V — most universal method
         // AXValue looks good on paper but Electron apps (Claude, VS Code, Slack etc.)
@@ -30,17 +16,17 @@ enum PasteHelper {
 
     private static func insertViaAccessibility(text: String) -> Bool {
         guard let app = NSWorkspace.shared.frontmostApplication else {
-            debugLog("AX: no frontmost app")
+            log.debug("AX: no frontmost app")
             return false
         }
-        debugLog("AX: frontmost app = \(app.localizedName ?? "?") pid=\(app.processIdentifier)")
+        log.debug("AX: frontmost app = \(app.localizedName ?? "?") pid=\(app.processIdentifier)")
 
         let appRef = AXUIElementCreateApplication(app.processIdentifier)
 
         var focusedElement: CFTypeRef?
         let focusResult = AXUIElementCopyAttributeValue(appRef, kAXFocusedUIElementAttribute as CFString, &focusedElement)
         guard focusResult == .success, let element = focusedElement else {
-            debugLog("AX: getFocusedElement failed: \(focusResult.rawValue)")
+            log.debug("AX: getFocusedElement failed: \(focusResult.rawValue)")
             return false
         }
 
@@ -49,12 +35,12 @@ enum PasteHelper {
         var roleRef: CFTypeRef?
         AXUIElementCopyAttributeValue(axElement, kAXRoleAttribute as CFString, &roleRef)
         let role = roleRef as? String ?? "unknown"
-        debugLog("AX: element role = \(role)")
+        log.debug("AX: element role = \(role)")
 
         var isSettable: DarwinBoolean = false
         let settableResult = AXUIElementIsAttributeSettable(axElement, kAXValueAttribute as CFString, &isSettable)
         guard settableResult == .success, isSettable.boolValue else {
-            debugLog("AX: not settable (result=\(settableResult.rawValue), settable=\(isSettable.boolValue))")
+            log.debug("AX: not settable (result=\(settableResult.rawValue), settable=\(isSettable.boolValue))")
             return false
         }
 
@@ -63,17 +49,17 @@ enum PasteHelper {
 
         if rangeResult == .success {
             let setResult = AXUIElementSetAttributeValue(axElement, kAXSelectedTextAttribute as CFString, text as CFTypeRef)
-            debugLog("AX: setSelectedText result = \(setResult.rawValue)")
+            log.debug("AX: setSelectedText result = \(setResult.rawValue)")
             return setResult == .success
         }
 
-        debugLog("AX: no selectedRange, appending to value")
+        log.debug("AX: no selectedRange, appending to value")
         var currentValueRef: CFTypeRef?
         AXUIElementCopyAttributeValue(axElement, kAXValueAttribute as CFString, &currentValueRef)
         let currentValue = currentValueRef as? String ?? ""
         let newValue = currentValue + text
         let setResult = AXUIElementSetAttributeValue(axElement, kAXValueAttribute as CFString, newValue as CFTypeRef)
-        debugLog("AX: setValue result = \(setResult.rawValue)")
+        log.debug("AX: setValue result = \(setResult.rawValue)")
         return setResult == .success
     }
 
@@ -95,9 +81,9 @@ enum PasteHelper {
                 keyUp.flags = .maskCommand
                 keyUp.post(tap: .cghidEventTap)
             }
-            debugLog("CGEvent Cmd+V sent")
+            log.debug("CGEvent Cmd+V sent")
         } else {
-            debugLog("CGEvent failed, trying osascript fallback...")
+            log.debug("CGEvent failed, trying osascript fallback...")
             let process = Process()
             process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
             process.arguments = ["-e", "tell application \"System Events\" to keystroke \"v\" using command down"]
@@ -106,9 +92,9 @@ enum PasteHelper {
             do {
                 try process.run()
                 process.waitUntilExit()
-                debugLog("osascript exit=\(process.terminationStatus)")
+                log.debug("osascript exit=\(process.terminationStatus)")
             } catch {
-                debugLog("osascript failed: \(error)")
+                log.debug("osascript failed: \(error)")
             }
         }
     }

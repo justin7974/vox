@@ -14,11 +14,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     private var statusItem: NSStatusItem!
     private var state: AppState = .idle
-    private let recorder = AudioRecorder()
+    private let recorder = AudioService.shared
     private let overlay = StatusOverlay()
     private var hotKeyRef: EventHotKeyRef?
     private var setupWindow: SetupWindow?
     private var historyWindowController: HistoryWindowController?
+    private var blackBoxWindowController: BlackBoxWindowController?
     private var hotkeyMenuItem: NSMenuItem?
     private var translateMenuItem: NSMenuItem?
     private(set) var translateMode: Bool = false
@@ -28,7 +29,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         AppDelegate.shared = self
-        migrateConfigDir()
+        _ = ConfigService.shared  // trigger migration + initial load
         setupEditMenu()
         setupStatusBar()
         loadHotkeyMode()
@@ -46,49 +47,21 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         UNUserNotificationCenter.current().requestAuthorization(options: [.alert]) { _, _ in }
 
         // First-run check: show setup if no config exists
-        if !configExists() {
+        if !config.configExists {
             showSetup()
-        }
-    }
-
-    // MARK: - Migration
-
-    /// One-time migration: move ~/.voiceinput → ~/.vox (renamed in v2.2)
-    private func migrateConfigDir() {
-        let fm = FileManager.default
-        let oldDir = NSHomeDirectory() + "/.voiceinput"
-        let newDir = NSHomeDirectory() + "/.vox"
-        guard fm.fileExists(atPath: oldDir), !fm.fileExists(atPath: newDir) else { return }
-        do {
-            try fm.moveItem(atPath: oldDir, toPath: newDir)
-            NSLog("Vox: Migrated config from ~/.voiceinput → ~/.vox")
-        } catch {
-            NSLog("Vox: Config migration failed: \(error.localizedDescription)")
         }
     }
 
     // MARK: - Config
 
-    private func configExists() -> Bool {
-        let configPath = NSHomeDirectory() + "/.vox/config.json"
-        return FileManager.default.fileExists(atPath: configPath)
-    }
+    private let config = ConfigService.shared
 
     func loadHotkeyMode() {
-        let configPath = NSHomeDirectory() + "/.vox/config.json"
-        if let data = FileManager.default.contents(atPath: configPath),
-           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-            if let mode = json["hotkeyMode"] as? String {
-                hotkeyMode = mode
-            }
-            if let keyCode = json["hotkeyKeyCode"] as? Int {
-                hotkeyKeyCode = UInt32(keyCode)
-            }
-            if let modifiers = json["hotkeyModifiers"] as? Int {
-                hotkeyModifiers = UInt32(modifiers)
-            }
-            NSLog("Vox: Hotkey mode = \(hotkeyMode), key = \(HotkeyRecorderView.hotkeyString(keyCode: hotkeyKeyCode, modifiers: hotkeyModifiers))")
-        }
+        config.reload()
+        hotkeyMode = config.hotkeyMode
+        hotkeyKeyCode = config.hotkeyKeyCode
+        hotkeyModifiers = config.hotkeyModifiers
+        NSLog("Vox: Hotkey mode = \(hotkeyMode), key = \(HotkeyRecorderView.hotkeyString(keyCode: hotkeyKeyCode, modifiers: hotkeyModifiers))")
     }
 
     func reloadHotkey() {
@@ -152,6 +125,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(transItem)
 
         menu.addItem(NSMenuItem(title: "View History", action: #selector(openHistory), keyEquivalent: "h"))
+        menu.addItem(NSMenuItem(title: "Black Box", action: #selector(openBlackBox), keyEquivalent: "b"))
         menu.addItem(NSMenuItem(title: "Edit Prompt", action: #selector(openPromptFile), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: "Open Config File", action: #selector(openConfigFile), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: "View Log", action: #selector(openLog), keyEquivalent: ""))
@@ -231,6 +205,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             historyWindowController = HistoryWindowController()
         }
         historyWindowController?.show()
+    }
+
+    @objc private func openBlackBox() {
+        if blackBoxWindowController == nil {
+            blackBoxWindowController = BlackBoxWindowController()
+        }
+        blackBoxWindowController?.show()
     }
 
     @objc private func openPromptFile() {
@@ -319,7 +300,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         switch hotkeyMode {
         case "hold":
             if state == .idle {
-                if !configExists() {
+                if !config.configExists {
                     AppDelegate.showNotification(title: "Vox", message: "Please configure your API keys first.")
                     showSetup()
                     return
@@ -342,7 +323,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func toggleRecording() {
         switch state {
         case .idle:
-            if !configExists() {
+            if !config.configExists {
                 AppDelegate.showNotification(title: "Vox", message: "Please configure your API keys first.")
                 showSetup()
                 return
@@ -361,7 +342,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         recorder.onAudioLevel = { [weak self] level in
             self?.overlay.updateAudioLevel(level)
         }
-        recorder.start()
+        recorder.startRecording()
         NSSound(named: "Tink")?.play()
         NSLog("Vox: Recording started")
     }
@@ -375,7 +356,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let contextHint = ContextDetector.contextHint(for: appContext)
         let isTranslate = translateMode
 
-        guard let audioURL = recorder.stop() else {
+        guard let audioURL = recorder.stopRecording() else {
             state = .idle
             updateStatusIcon()
             return
@@ -402,34 +383,22 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             return
         }
 
+        // Audio backup is now handled automatically by AudioService.stopRecording()
+
         state = .processing
         updateStatusIcon()
         NSSound(named: "Pop")?.play()
         NSLog("Vox: Recording stopped (\(fileSize) bytes, peak: \(recorder.peakPower) dB), processing...")
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let logPath = NSHomeDirectory() + "/.vox/debug.log"
-            func debugLog(_ msg: String) {
-                let ts = ISO8601DateFormatter().string(from: Date())
-                let line = "[\(ts)] \(msg)\n"
-                NSLog("Vox: \(msg)")
-                if let data = line.data(using: .utf8) {
-                    if FileManager.default.fileExists(atPath: logPath) {
-                        if let fh = FileHandle(forWritingAtPath: logPath) {
-                            fh.seekToEndOfFile(); fh.write(data); fh.closeFile()
-                        }
-                    } else {
-                        FileManager.default.createFile(atPath: logPath, contents: data)
-                    }
-                }
-            }
+            let log = LogService.shared
 
-            debugLog("Step 1: Transcribe start (file: \(audioURL.lastPathComponent))")
+            log.debug("Step 1: Transcribe start (file: \(audioURL.lastPathComponent))")
             let rawText = Transcriber.transcribe(audioFile: audioURL)
-            debugLog("Step 1: Transcribe result: [\(rawText)]")
+            log.debug("Step 1: Transcribe result: [\(rawText)]")
 
             guard !rawText.isEmpty else {
-                debugLog("Step 1: Empty result, aborting")
+                log.debug("Step 1: Empty result, aborting")
                 DispatchQueue.main.async {
                     self?.state = .idle
                     self?.updateStatusIcon()
@@ -439,24 +408,24 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                 return
             }
 
-            debugLog("Step 2: PostProcessor start (context: \(contextHint ?? "none"), translate: \(isTranslate))")
+            log.debug("Step 2: PostProcessor start (context: \(contextHint ?? "none"), translate: \(isTranslate))")
             let cleanText = PostProcessor.process(rawText: rawText, contextHint: contextHint, translateMode: isTranslate)
             let postProcessed = cleanText.isEmpty ? rawText : cleanText
-            debugLog("Step 2: PostProcessor result: [\(postProcessed)]")
+            log.debug("Step 2: PostProcessor result: [\(postProcessed)]")
 
             let finalText: String
             if PostProcessor.isConfigured {
                 finalText = postProcessed
-                debugLog("Step 3: Skipped TextFormatter (LLM active)")
+                log.debug("Step 3: Skipped TextFormatter (LLM active)")
             } else {
                 finalText = TextFormatter.format(postProcessed)
-                debugLog("Step 3: TextFormatter applied: [\(finalText)]")
+                log.debug("Step 3: TextFormatter applied: [\(finalText)]")
             }
 
-            debugLog("Step 4: Pasting...")
+            log.debug("Step 4: Pasting...")
             DispatchQueue.main.async {
                 PasteHelper.paste(text: finalText)
-                debugLog("Step 4: Paste done")
+                log.debug("Step 4: Paste done")
 
                 // Save to history (translation mode: store both languages)
                 if isTranslate {
@@ -476,7 +445,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func quit() {
         if state == .recording {
-            _ = recorder.stop()
+            _ = recorder.stopRecording()
         }
         NSApplication.shared.terminate(nil)
     }

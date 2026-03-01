@@ -123,7 +123,7 @@ class SetupWindow: NSObject, NSWindowDelegate {
     private var holdCard: NSView?
 
     // Test recording
-    private var testRecorder: AudioRecorder?
+    private var testRecorder: AudioService?
     private var testResultField: NSTextField!
     private var testResultCard: NSView?
     private var testButton: NSButton!
@@ -914,7 +914,7 @@ class SetupWindow: NSObject, NSWindowDelegate {
             testStatusLabel.stringValue = "Transcribing your speech..."
             audioLevelView?.isHidden = true
 
-            guard let url = testRecorder?.stop() else {
+            guard let url = testRecorder?.stopRecording() else {
                 testStatusLabel.stringValue = "Recording failed. Try again."
                 testButton.title = "   Start Recording   "
                 testButton.isEnabled = true
@@ -945,13 +945,13 @@ class SetupWindow: NSObject, NSWindowDelegate {
         } else {
             // Start recording
             testIsRecording = true
-            testRecorder = AudioRecorder()
+            testRecorder = AudioService.shared
             testRecorder?.onAudioLevel = { [weak self] level in
                 DispatchQueue.main.async {
                     self?.audioLevelView?.updateLevel(level)
                 }
             }
-            testRecorder?.start()
+            testRecorder?.startRecording()
             testButton.title = "   Stop Recording   "
             testStatusLabel.stringValue = "Listening..."
             NSSound(named: "Tink")?.play()
@@ -1601,7 +1601,7 @@ class SetupWindow: NSObject, NSWindowDelegate {
 
     func windowWillClose(_ notification: Notification) {
         if testIsRecording {
-            testRecorder?.stop()
+            testRecorder?.stopRecording()
             testRecorder = nil
             testIsRecording = false
         }

@@ -17,18 +17,16 @@ class HistoryManager {
     private let historyFilePath = NSHomeDirectory() + "/.vox/history.json"
     private var records: [Record] = []
 
-    // MARK: - Settings (stored in config.json)
+    // MARK: - Settings (via ConfigService)
 
-    /// Whether history recording is enabled
     var isEnabled: Bool {
-        get { readConfigBool("historyEnabled", default: true) }
-        set { writeConfigValue("historyEnabled", value: newValue) }
+        get { ConfigService.shared.historyEnabled }
+        set { ConfigService.shared.historyEnabled = newValue }
     }
 
-    /// Retention period in days (0 = forever, 1, 7, or 30)
     var retentionDays: Int {
-        get { readConfigInt("historyRetentionDays", default: 7) }
-        set { writeConfigValue("historyRetentionDays", value: newValue) }
+        get { ConfigService.shared.historyRetentionDays }
+        set { ConfigService.shared.historyRetentionDays = newValue }
     }
 
     // MARK: - Init
@@ -114,31 +112,4 @@ class HistoryManager {
         }
     }
 
-    // MARK: - Config Helpers
-
-    private func readConfig() -> [String: Any] {
-        let configPath = NSHomeDirectory() + "/.vox/config.json"
-        guard let data = FileManager.default.contents(atPath: configPath),
-              let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            return [:]
-        }
-        return json
-    }
-
-    private func readConfigBool(_ key: String, default defaultValue: Bool) -> Bool {
-        return readConfig()[key] as? Bool ?? defaultValue
-    }
-
-    private func readConfigInt(_ key: String, default defaultValue: Int) -> Int {
-        return readConfig()[key] as? Int ?? defaultValue
-    }
-
-    private func writeConfigValue(_ key: String, value: Any) {
-        let configPath = NSHomeDirectory() + "/.vox/config.json"
-        var config = readConfig()
-        config[key] = value
-        if let data = try? JSONSerialization.data(withJSONObject: config, options: [.prettyPrinted, .sortedKeys]) {
-            try? data.write(to: URL(fileURLWithPath: configPath))
-        }
-    }
 }

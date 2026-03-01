@@ -22,13 +22,14 @@ if [ -f "$SCRIPT_DIR/AppIcon.icns" ]; then
     cp "$SCRIPT_DIR/AppIcon.icns" "$APP_DIR/Contents/Resources/"
 fi
 
-# Compile Swift files
+# Compile Swift files (including subdirectories)
+SWIFT_FILES=$(find "$SCRIPT_DIR/Vox" -name "*.swift" -type f)
 swiftc -O \
     -framework Cocoa \
     -framework AVFoundation \
     -framework Carbon \
     -module-name Vox \
-    "$SCRIPT_DIR/Vox/"*.swift \
+    $SWIFT_FILES \
     -o "$APP_DIR/Contents/MacOS/$APP_NAME"
 
 # Code signing (preserves TCC permissions across rebuilds)
