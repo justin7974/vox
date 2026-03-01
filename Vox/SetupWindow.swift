@@ -925,7 +925,7 @@ class SetupWindow: NSObject, NSWindowDelegate {
 
             DispatchQueue.global(qos: .userInitiated).async { [weak self] in
                 let rawText = STTService.shared.transcribe(audioFile: url)
-                let cleanText = PostProcessor.process(rawText: rawText)
+                let cleanText = LLMService.shared.process(rawText: rawText)
                 let finalText = cleanText.isEmpty ? rawText : cleanText
 
                 DispatchQueue.main.async {

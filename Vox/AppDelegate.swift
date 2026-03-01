@@ -218,13 +218,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let promptPath = NSHomeDirectory() + "/.vox/prompt.txt"
         if !FileManager.default.fileExists(atPath: promptPath) {
             // Trigger prompt file creation with comments + default prompt
-            _ = PostProcessor.process(rawText: "")
+            _ = LLMService.shared.process(rawText: "")
         }
         // Still might not exist if PostProcessor skipped (no LLM config) — create manually
         if !FileManager.default.fileExists(atPath: promptPath) {
             let dir = NSHomeDirectory() + "/.vox"
             try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
-            try? PostProcessor.defaultPrompt.write(toFile: promptPath, atomically: true, encoding: .utf8)
+            try? LLMService.defaultPrompt.write(toFile: promptPath, atomically: true, encoding: .utf8)
         }
         NSWorkspace.shared.open(URL(fileURLWithPath: promptPath))
     }
@@ -409,12 +409,12 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             }
 
             log.debug("Step 2: PostProcessor start (context: \(contextHint ?? "none"), translate: \(isTranslate))")
-            let cleanText = PostProcessor.process(rawText: rawText, contextHint: contextHint, translateMode: isTranslate)
+            let cleanText = LLMService.shared.process(rawText: rawText, contextHint: contextHint, translateMode: isTranslate)
             let postProcessed = cleanText.isEmpty ? rawText : cleanText
             log.debug("Step 2: PostProcessor result: [\(postProcessed)]")
 
             let finalText: String
-            if PostProcessor.isConfigured {
+            if LLMService.shared.isConfigured {
                 finalText = postProcessed
                 log.debug("Step 3: Skipped TextFormatter (LLM active)")
             } else {
