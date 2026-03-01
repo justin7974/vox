@@ -22,6 +22,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         setupStatusBar()
         dictation.onNeedsSetup = { [weak self] in self?.showSetup() }
         ActionService.shared.loadActions()
+        ClipboardService.shared.startMonitoring()
         hotkey.delegate = self
         hotkey.register()
 

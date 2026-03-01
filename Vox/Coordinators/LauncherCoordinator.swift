@@ -1,7 +1,7 @@
 import Cocoa
 
 /// Coordinates the Launcher mode: push-to-talk -> transcribe -> intent match -> execute.
-class LauncherCoordinator {
+class LauncherCoordinator: ClipboardPanelDelegate {
     private let log = LogService.shared
     private let audio = AudioService.shared
     private let stt = STTService.shared
@@ -11,6 +11,11 @@ class LauncherCoordinator {
 
     private let sm = VoxStateMachine()
     private let panel = LauncherPanel()
+    private let clipboardPanel = ClipboardPanel()
+
+    init() {
+        clipboardPanel.delegate = self
+    }
 
     // MARK: - Public API (called by AppDelegate via HotkeyDelegate)
 
@@ -89,6 +94,28 @@ class LauncherCoordinator {
 
                 do {
                     let result = try await self.actionService.execute(match: match)
+
+                    // Special: clipboard_show triggers the clipboard panel
+                    if result.message == "clipboard_show" {
+                        await MainActor.run {
+                            self.panel.hide()
+                            let history = ClipboardService.shared.history
+                            if history.isEmpty {
+                                self.panel.showResult(ActionResult(success: false, message: "剪贴板为空"))
+                                self.panel.show()
+                            } else {
+                                self.clipboardPanel.show(items: history)
+                            }
+                            self.sm.transition(to: .idle)
+                        }
+                        if ClipboardService.shared.history.isEmpty {
+                            try? await Task.sleep(for: .seconds(1.5))
+                            await MainActor.run { self.panel.hide() }
+                        }
+                        try? FileManager.default.removeItem(at: audioURL)
+                        return
+                    }
+
                     await MainActor.run {
                         self.sm.transition(to: .showingResult)
                         self.panel.showResult(result)
@@ -124,5 +151,18 @@ class LauncherCoordinator {
             panel.hide()
             sm.transition(to: .idle)
         }
+        if clipboardPanel.isVisible {
+            clipboardPanel.hide()
+        }
+    }
+
+    // MARK: - ClipboardPanelDelegate
+
+    func clipboardPanelDidSelectItem(_ item: ClipboardItem) {
+        PasteService.shared.paste(text: item.text)
+    }
+
+    func clipboardPanelDidDismiss() {
+        // Clipboard panel manages its own lifecycle
     }
 }
