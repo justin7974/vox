@@ -1019,8 +1019,8 @@ class SetupWindow: NSObject, NSWindowDelegate {
 
         let popup = NSPopUpButton()
         popup.addItems(withTitles: ["Never", "1 day", "7 days", "30 days", "Forever"])
-        let currentDays = HistoryManager.shared.retentionDays
-        let enabled = HistoryManager.shared.isEnabled
+        let currentDays = HistoryService.shared.retentionDays
+        let enabled = HistoryService.shared.isEnabled
         if !enabled {
             popup.selectItem(at: 0) // Never
         } else {
@@ -1054,13 +1054,13 @@ class SetupWindow: NSObject, NSWindowDelegate {
 
         if popupIndex == 0 {
             // "Never" — disable history
-            HistoryManager.shared.isEnabled = false
+            HistoryService.shared.isEnabled = false
             NSLog("Vox: History settings saved — disabled (Never)")
         } else {
-            HistoryManager.shared.isEnabled = true
+            HistoryService.shared.isEnabled = true
             let daysMap = [1: 1, 2: 7, 3: 30, 4: 0] // 0 = forever
             let days = daysMap[popupIndex] ?? 7
-            HistoryManager.shared.retentionDays = days
+            HistoryService.shared.retentionDays = days
             NSLog("Vox: History settings saved — enabled, retention: \(days == 0 ? "forever" : "\(days) days")")
         }
     }

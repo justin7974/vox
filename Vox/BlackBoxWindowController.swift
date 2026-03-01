@@ -182,9 +182,9 @@ class BlackBoxWindowController: NSObject, NSWindowDelegate, NSTableViewDataSourc
 
                 // Save to history
                 if isTranslate {
-                    HistoryManager.shared.addRecord(text: finalText, originalText: rawText, isTranslation: true)
+                    HistoryService.shared.addRecord(text: finalText, originalText: rawText, isTranslation: true)
                 } else {
-                    HistoryManager.shared.addRecord(text: finalText)
+                    HistoryService.shared.addRecord(text: finalText)
                 }
 
                 // Success feedback

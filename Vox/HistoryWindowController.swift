@@ -6,7 +6,7 @@ class HistoryWindowController: NSObject, NSWindowDelegate, NSTableViewDataSource
 
     private var window: NSWindow!
     private var tableView: NSTableView!
-    private var records: [HistoryManager.Record] = []
+    private var records: [HistoryService.Record] = []
     private var displayItems: [DisplayItem] = []
     private var emptyLabel: NSTextField!
     private var countLabel: NSTextField!
@@ -18,7 +18,7 @@ class HistoryWindowController: NSObject, NSWindowDelegate, NSTableViewDataSource
 
     private enum DisplayItem {
         case dayHeader(String)
-        case record(index: Int, record: HistoryManager.Record)
+        case record(index: Int, record: HistoryService.Record)
     }
 
     // MARK: - Show
@@ -30,7 +30,7 @@ class HistoryWindowController: NSObject, NSWindowDelegate, NSTableViewDataSource
             return
         }
 
-        records = HistoryManager.shared.getRecords()
+        records = HistoryService.shared.getRecords()
         buildDisplayItems()
 
         window = NSWindow(
@@ -182,7 +182,7 @@ class HistoryWindowController: NSObject, NSWindowDelegate, NSTableViewDataSource
         alert.alertStyle = .warning
 
         if alert.runModal() == .alertFirstButtonReturn {
-            HistoryManager.shared.clearAll()
+            HistoryService.shared.clearAll()
             records.removeAll()
             buildDisplayItems()
             tableView.reloadData()
@@ -222,8 +222,8 @@ class HistoryWindowController: NSObject, NSWindowDelegate, NSTableViewDataSource
         let row = sender.tag
         guard row >= 0 && row < displayItems.count else { return }
         if case .record(let index, _) = displayItems[row] {
-            HistoryManager.shared.deleteRecord(at: index)
-            records = HistoryManager.shared.getRecords()
+            HistoryService.shared.deleteRecord(at: index)
+            records = HistoryService.shared.getRecords()
             buildDisplayItems()
             tableView.reloadData()
             countLabel.stringValue = countString()
@@ -305,7 +305,7 @@ class HistoryWindowController: NSObject, NSWindowDelegate, NSTableViewDataSource
 
     // MARK: - Record View
 
-    private func makeRecordView(record: HistoryManager.Record, row: Int) -> NSView {
+    private func makeRecordView(record: HistoryService.Record, row: Int) -> NSView {
         let cell = HoverableRowView()
         cell.wantsLayer = true
 

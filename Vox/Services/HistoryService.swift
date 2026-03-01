@@ -2,8 +2,8 @@ import Foundation
 
 /// Manages voice input history records — saves polished results with timestamps,
 /// auto-cleans expired entries based on user-configured retention period.
-class HistoryManager {
-    static let shared = HistoryManager()
+class HistoryService {
+    static let shared = HistoryService()
 
     struct Record: Codable {
         let text: String

@@ -429,9 +429,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
                 // Save to history (translation mode: store both languages)
                 if isTranslate {
-                    HistoryManager.shared.addRecord(text: finalText, originalText: rawText, isTranslation: true)
+                    HistoryService.shared.addRecord(text: finalText, originalText: rawText, isTranslation: true)
                 } else {
-                    HistoryManager.shared.addRecord(text: finalText)
+                    HistoryService.shared.addRecord(text: finalText)
                 }
 
                 self?.state = .idle
