@@ -1,39 +1,93 @@
 import Foundation
 
-enum Transcriber {
-    private static let log = LogService.shared
+// MARK: - Protocol
 
-    // MARK: - Public API
+protocol STTProvider {
+    var name: String { get }
+    func transcribe(audioFile: URL) -> String
+}
 
-    static func transcribe(audioFile: URL) -> String {
-        let cfg = ConfigService.shared
-        // Log audio file size for diagnostics
-        let fileSize = (try? FileManager.default.attributesOfItem(atPath: audioFile.path)[.size] as? Int) ?? 0
-        log.debug("Audio file: \(audioFile.lastPathComponent), size: \(fileSize) bytes")
+// MARK: - WhisperLocalProvider
 
-        switch cfg.asrProvider {
-        case "qwen":
-            log.debug("Using Qwen ASR")
-            return transcribeWithQwen(audioFile: audioFile, apiKey: cfg.qwenASRApiKey ?? "")
-        case "custom":
-            if let custom = cfg.customASRConfig {
-                log.debug("Using custom ASR: \(custom.baseURL) model: \(custom.model)")
-                return transcribeWithWhisperAPI(audioFile: audioFile, baseURL: custom.baseURL,
-                                                apiKey: custom.apiKey, model: custom.model)
-            }
-            log.debug("Custom ASR config missing, falling back to whisper")
-            return transcribeWithWhisper(audioFile: audioFile, execPath: cfg.whisperExecPath,
-                                         modelPath: cfg.whisperModelPath)
-        default:
-            log.debug("Using local Whisper: \(cfg.whisperExecPath)")
-            return transcribeWithWhisper(audioFile: audioFile, execPath: cfg.whisperExecPath,
-                                         modelPath: cfg.whisperModelPath)
-        }
+struct WhisperLocalProvider: STTProvider {
+    let name = "whisper-local"
+    private let log = LogService.shared
+    private let execPath: String
+    private let modelPath: String
+
+    init(execPath: String, modelPath: String) {
+        self.execPath = execPath
+        self.modelPath = modelPath
     }
 
-    // MARK: - Qwen ASR (Alibaba DashScope)
+    func transcribe(audioFile: URL) -> String {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: execPath)
+        process.arguments = [
+            "-m", modelPath,
+            "-l", "zh",
+            "-t", "4",
+            "--no-timestamps",
+            "-f", audioFile.path
+        ]
 
-    private static func transcribeWithQwen(audioFile: URL, apiKey: String) -> String {
+        let outputPipe = Pipe()
+        process.standardOutput = outputPipe
+        process.standardError = Pipe()
+
+        do {
+            try process.run()
+            process.waitUntilExit()
+        } catch {
+            log.debug("Whisper failed: \(error)")
+            return ""
+        }
+
+        let data = outputPipe.fileHandleForReading.readDataToEndOfFile()
+        let output = String(data: data, encoding: .utf8) ?? ""
+
+        return parseWhisperOutput(output)
+    }
+
+    private func parseWhisperOutput(_ output: String) -> String {
+        let lines = output.components(separatedBy: .newlines)
+        var textParts: [String] = []
+
+        for line in lines {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            if trimmed.isEmpty { continue }
+
+            if trimmed.hasPrefix("whisper_") || trimmed.hasPrefix("system_info") { continue }
+
+            if trimmed.hasPrefix("[") && trimmed.contains("-->") {
+                if let closeBracket = trimmed.firstIndex(of: "]") {
+                    let text = String(trimmed[trimmed.index(after: closeBracket)...])
+                        .trimmingCharacters(in: .whitespaces)
+                    if !text.isEmpty {
+                        textParts.append(text)
+                    }
+                }
+            } else {
+                textParts.append(trimmed)
+            }
+        }
+
+        return textParts.joined(separator: "")
+    }
+}
+
+// MARK: - QwenASRProvider
+
+struct QwenASRProvider: STTProvider {
+    let name = "qwen"
+    private let log = LogService.shared
+    private let apiKey: String
+
+    init(apiKey: String) {
+        self.apiKey = apiKey
+    }
+
+    func transcribe(audioFile: URL) -> String {
         guard let audioData = try? Data(contentsOf: audioFile) else {
             log.debug("Failed to read audio file")
             return ""
@@ -41,7 +95,6 @@ enum Transcriber {
 
         let base64Audio = audioData.base64EncodedString()
 
-        // Determine MIME type from file extension
         let ext = audioFile.pathExtension.lowercased()
         let mime: String
         switch ext {
@@ -120,7 +173,6 @@ enum Transcriber {
                 return
             }
 
-            // Check for error
             if let errorInfo = json["error"] as? [String: Any],
                let message = errorInfo["message"] as? String {
                 log.debug("Qwen ASR API error: \(message)")
@@ -131,7 +183,6 @@ enum Transcriber {
                 return
             }
 
-            // Extract content from OpenAI-compatible response
             if let choices = json["choices"] as? [[String: Any]],
                let message = choices.first?["message"] as? [String: Any],
                let content = message["content"] as? String {
@@ -149,20 +200,26 @@ enum Transcriber {
             log.debug("Qwen ASR returned empty result")
         }
 
-        // Qwen cloud ASR does not hallucinate like Whisper — skip hallucination filter
-        // Only filter truly empty/whitespace results
-        let trimmed = result.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.count < 2 {
-            log.debug("Qwen ASR result too short, discarding: [\(result)]")
-            return ""
-        }
-
         return result
     }
+}
 
-    // MARK: - Custom Cloud ASR (OpenAI Whisper API compatible)
+// MARK: - WhisperAPIProvider (OpenAI Whisper API compatible)
 
-    private static func transcribeWithWhisperAPI(audioFile: URL, baseURL: String, apiKey: String, model: String) -> String {
+struct WhisperAPIProvider: STTProvider {
+    let name = "custom"
+    private let log = LogService.shared
+    private let baseURL: String
+    private let apiKey: String
+    private let model: String
+
+    init(baseURL: String, apiKey: String, model: String) {
+        self.baseURL = baseURL
+        self.apiKey = apiKey
+        self.model = model
+    }
+
+    func transcribe(audioFile: URL) -> String {
         guard let audioData = try? Data(contentsOf: audioFile) else {
             log.debug("Failed to read audio file")
             return ""
@@ -180,7 +237,6 @@ enum Transcriber {
         request.setValue("multipart/form-data; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
 
-        // Build multipart form body
         var body = Data()
         let filename = audioFile.lastPathComponent
         let ext = audioFile.pathExtension.lowercased()
@@ -194,14 +250,12 @@ enum Transcriber {
         default:    mime = "audio/wav"
         }
 
-        // file field
         body.append("--\(boundary)\r\n".data(using: .utf8)!)
         body.append("Content-Disposition: form-data; name=\"file\"; filename=\"\(filename)\"\r\n".data(using: .utf8)!)
         body.append("Content-Type: \(mime)\r\n\r\n".data(using: .utf8)!)
         body.append(audioData)
         body.append("\r\n".data(using: .utf8)!)
 
-        // model field
         body.append("--\(boundary)\r\n".data(using: .utf8)!)
         body.append("Content-Disposition: form-data; name=\"model\"\r\n\r\n".data(using: .utf8)!)
         body.append("\(model)\r\n".data(using: .utf8)!)
@@ -251,7 +305,6 @@ enum Transcriber {
                 return
             }
 
-            // Standard Whisper API response: {"text": "..."}
             if let text = json["text"] as? String {
                 result = text.trimmingCharacters(in: .whitespacesAndNewlines)
                 log.debug("Custom ASR result: [\(result)]")
@@ -267,73 +320,51 @@ enum Transcriber {
             log.debug("Custom ASR returned empty result")
         }
 
-        let trimmed = result.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.count < 2 {
-            log.debug("Custom ASR result too short, discarding: [\(result)]")
-            return ""
-        }
-
         return result
     }
+}
 
-    // MARK: - Local Whisper
+// MARK: - STTService
 
-    private static func transcribeWithWhisper(audioFile: URL, execPath: String, modelPath: String) -> String {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: execPath)
-        process.arguments = [
-            "-m", modelPath,
-            "-l", "zh",
-            "-t", "4",
-            "--no-timestamps",
-            "-f", audioFile.path
-        ]
+class STTService {
+    static let shared = STTService()
 
-        let outputPipe = Pipe()
-        process.standardOutput = outputPipe
-        process.standardError = Pipe()
+    private let log = LogService.shared
+    private let config = ConfigService.shared
 
-        do {
-            try process.run()
-            process.waitUntilExit()
-        } catch {
-            log.debug("Whisper failed: \(error)")
-            return ""
+    private var provider: STTProvider {
+        switch config.asrProvider {
+        case "qwen":
+            return QwenASRProvider(apiKey: config.qwenASRApiKey ?? "")
+        case "custom":
+            if let custom = config.customASRConfig {
+                return WhisperAPIProvider(baseURL: custom.baseURL, apiKey: custom.apiKey, model: custom.model)
+            }
+            log.debug("Custom ASR config missing, falling back to whisper")
+            return WhisperLocalProvider(execPath: config.whisperExecPath, modelPath: config.whisperModelPath)
+        default:
+            return WhisperLocalProvider(execPath: config.whisperExecPath, modelPath: config.whisperModelPath)
         }
-
-        let data = outputPipe.fileHandleForReading.readDataToEndOfFile()
-        let output = String(data: data, encoding: .utf8) ?? ""
-
-        return parseWhisperOutput(output)
     }
 
-    private static func parseWhisperOutput(_ output: String) -> String {
-        let lines = output.components(separatedBy: .newlines)
-        var textParts: [String] = []
+    func transcribe(audioFile: URL) -> String {
+        let fileSize = (try? FileManager.default.attributesOfItem(atPath: audioFile.path)[.size] as? Int) ?? 0
+        log.debug("Audio file: \(audioFile.lastPathComponent), size: \(fileSize) bytes")
 
-        for line in lines {
-            let trimmed = line.trimmingCharacters(in: .whitespaces)
-            if trimmed.isEmpty { continue }
+        let p = provider
+        log.debug("Using STT provider: \(p.name)")
 
-            if trimmed.hasPrefix("whisper_") || trimmed.hasPrefix("system_info") { continue }
+        let result = p.transcribe(audioFile: audioFile)
 
-            if trimmed.hasPrefix("[") && trimmed.contains("-->") {
-                if let closeBracket = trimmed.firstIndex(of: "]") {
-                    let text = String(trimmed[trimmed.index(after: closeBracket)...])
-                        .trimmingCharacters(in: .whitespaces)
-                    if !text.isEmpty {
-                        textParts.append(text)
-                    }
-                }
-            } else {
-                textParts.append(trimmed)
-            }
+        // Hallucination filter (only for local whisper — cloud ASR doesn't hallucinate)
+        if p.name == "whisper-local" {
+            return filterHallucination(result)
         }
 
-        let result = textParts.joined(separator: "")
-
-        if isHallucination(result) {
-            log.debug("Filtered hallucination: [\(result)]")
+        // Cloud providers: only filter truly empty/whitespace
+        let trimmed = result.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.count < 2 {
+            log.debug("\(p.name) result too short, discarding: [\(result)]")
             return ""
         }
 
@@ -342,30 +373,27 @@ enum Transcriber {
 
     // MARK: - Hallucination Filter
 
-    private static func isHallucination(_ text: String) -> Bool {
+    private func filterHallucination(_ text: String) -> String {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
 
-        // Too short to be real speech
-        if trimmed.count < 2 { return true }
+        if trimmed.count < 2 { return "" }
 
-        // Single repeated character
         if trimmed.count > 2 {
             let chars = Set(trimmed)
-            if chars.count == 1 { return true }
+            if chars.count == 1 { return "" }
         }
 
-        // Patterns that are ALWAYS hallucinations regardless of text length
         let alwaysFilter = [
             "优优独播剧场", "YoYo Television", "Amara.org",
             "♪",
         ]
         for pattern in alwaysFilter {
-            if trimmed.contains(pattern) { return true }
+            if trimmed.contains(pattern) {
+                log.debug("Filtered hallucination: [\(trimmed)]")
+                return ""
+            }
         }
 
-        // Patterns that only indicate hallucination in SHORT text (< 30 chars)
-        // Whisper hallucinates short subtitle credits like "字幕由xxx翻译" or "感谢观看"
-        // but real speech can naturally contain words like "翻译", "订阅" in longer sentences
         if trimmed.count < 30 {
             let shortTextPatterns = [
                 "字幕", "字幕由", "字幕组",
@@ -377,10 +405,13 @@ enum Transcriber {
                 "Music",
             ]
             for pattern in shortTextPatterns {
-                if trimmed.contains(pattern) { return true }
+                if trimmed.contains(pattern) {
+                    log.debug("Filtered hallucination: [\(trimmed)]")
+                    return ""
+                }
             }
         }
 
-        return false
+        return text
     }
 }

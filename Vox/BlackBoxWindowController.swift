@@ -162,7 +162,7 @@ class BlackBoxWindowController: NSObject, NSWindowDelegate, NSTableViewDataSourc
             let isTranslate = AppDelegate.shared.translateMode
 
             NSLog("Vox: Black Box reprocessing \(backup.url.lastPathComponent)")
-            let rawText = Transcriber.transcribe(audioFile: backup.url)
+            let rawText = STTService.shared.transcribe(audioFile: backup.url)
 
             guard !rawText.isEmpty else {
                 DispatchQueue.main.async {

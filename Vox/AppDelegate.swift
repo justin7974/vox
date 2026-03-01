@@ -394,7 +394,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             let log = LogService.shared
 
             log.debug("Step 1: Transcribe start (file: \(audioURL.lastPathComponent))")
-            let rawText = Transcriber.transcribe(audioFile: audioURL)
+            let rawText = STTService.shared.transcribe(audioFile: audioURL)
             log.debug("Step 1: Transcribe result: [\(rawText)]")
 
             guard !rawText.isEmpty else {

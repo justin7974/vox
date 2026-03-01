@@ -924,7 +924,7 @@ class SetupWindow: NSObject, NSWindowDelegate {
             testRecorder = nil
 
             DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-                let rawText = Transcriber.transcribe(audioFile: url)
+                let rawText = STTService.shared.transcribe(audioFile: url)
                 let cleanText = PostProcessor.process(rawText: rawText)
                 let finalText = cleanText.isEmpty ? rawText : cleanText
 
