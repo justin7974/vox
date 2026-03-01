@@ -144,10 +144,6 @@ final class IntentService {
         ### open_folder
         folder 参数使用关键词：desktop, downloads, documents, home, applications, pictures, music, movies, trash, icloud, dropbox。
 
-        ### file_search
-        用户想找本地文件时使用，通过 Spotlight 搜索。query 是文件名或关键词，去掉口语修饰。
-        常见说法："找一下 readme"、"合同在哪"、"帮我找那个报告"。
-
         ### quick_answer（重要）
         对于简单查询（计算、换算、查词、时区、简单事实），用 quick_answer 直接回答。
         answer 参数中直接给出简洁答案（1-2句话）。
@@ -185,9 +181,6 @@ final class IntentService {
         "打开Gmail" → {"action_id":"open_url","params":{"url":"https://mail.google.com"},"confidence":0.95}
         "打开下载文件夹" → {"action_id":"open_folder","params":{"folder":"downloads"},"confidence":0.95}
         "打开桌面" → {"action_id":"open_folder","params":{"folder":"desktop"},"confidence":0.95}
-        "找一下合同" → {"action_id":"file_search","params":{"query":"合同"},"confidence":0.9}
-        "readme在哪" → {"action_id":"file_search","params":{"query":"readme"},"confidence":0.9}
-        "帮我找那个报告" → {"action_id":"file_search","params":{"query":"报告"},"confidence":0.9}
         "128乘以15" → {"action_id":"quick_answer","params":{"answer":"1,920"},"confidence":0.95}
         "100美元多少人民币" → {"action_id":"quick_answer","params":{"answer":"约 726 人民币（汇率 7.26）"},"confidence":0.9}
         "纽约现在几点" → {"action_id":"quick_answer","params":{"answer":"纽约现在是 14:30（根据当前北京时间换算，UTC-5）"},"confidence":0.95}

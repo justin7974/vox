@@ -323,9 +323,7 @@ final class ActionService {
             return try executeKillProcess(params: params)
         case "open_folder":
             return try executeOpenFolder(params: params)
-        case "file_search":
-            return try await executeFileSearch(params: params)
-        case "timer":
+case "timer":
             return try executeTimer(params: params)
         default:
             throw VoxError.actionFailed("Unknown system action: \(action.id)")
@@ -530,67 +528,6 @@ final class ActionService {
         NSWorkspace.shared.open(URL(fileURLWithPath: path))
         let displayName = (path as NSString).lastPathComponent
         return ActionResult(success: true, message: "打开了 \(displayName)")
-    }
-
-    // MARK: - File Search
-
-    private func executeFileSearch(params: [String: String]) async throws -> ActionResult {
-        guard let query = params["query"], !query.isEmpty else {
-            throw VoxError.actionFailed("Missing search query")
-        }
-
-        // Use NSMetadataQuery (same API as Spotlight/Alfred) — async, non-blocking, no shell
-        let paths: [String] = await withCheckedContinuation { continuation in
-            DispatchQueue.main.async {
-                let mdQuery = NSMetadataQuery()
-                mdQuery.predicate = NSPredicate(format: "kMDItemFSName CONTAINS[cd] %@", query)
-                mdQuery.searchScopes = [NSMetadataQueryLocalComputerScope]
-
-                var observer: NSObjectProtocol?
-                var timeoutWork: DispatchWorkItem?
-                var didResume = false
-
-                let collectAndResume = {
-                    guard !didResume else { return }
-                    didResume = true
-                    mdQuery.stop()
-                    if let obs = observer { NotificationCenter.default.removeObserver(obs) }
-                    timeoutWork?.cancel()
-
-                    var results: [String] = []
-                    for i in 0..<min(mdQuery.resultCount, 20) {
-                        if let item = mdQuery.result(at: i) as? NSMetadataItem,
-                           let path = item.value(forAttribute: kMDItemPath as String) as? String {
-                            results.append(path)
-                        }
-                    }
-                    continuation.resume(returning: results)
-                }
-
-                let work = DispatchWorkItem { collectAndResume() }
-                timeoutWork = work
-                DispatchQueue.main.asyncAfter(deadline: .now() + 3.0, execute: work)
-
-                observer = NotificationCenter.default.addObserver(
-                    forName: .NSMetadataQueryDidFinishGathering,
-                    object: mdQuery,
-                    queue: .main
-                ) { _ in collectAndResume() }
-
-                mdQuery.start()
-            }
-        }
-
-        guard let first = paths.first else {
-            return ActionResult(success: false, message: "未找到: \(query)")
-        }
-
-        await MainActor.run {
-            NSWorkspace.shared.activateFileViewerSelecting([URL(fileURLWithPath: first)])
-        }
-
-        let name = (first as NSString).lastPathComponent
-        return ActionResult(success: true, message: paths.count == 1 ? "找到: \(name)" : "找到 \(paths.count) 个，显示: \(name)")
     }
 
     // MARK: - Timer
