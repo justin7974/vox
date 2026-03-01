@@ -395,7 +395,7 @@ class LLMService {
         return provider != nil
     }
 
-    func process(rawText: String, contextHint: String? = nil, translateMode: Bool = false) async -> String {
+    func process(rawText: String, contextHint: String? = nil, translateMode: Bool = false, customSystemPrompt: String? = nil) async -> String {
         guard let p = provider else {
             log.debug("No LLM config, skipping post-processing")
             return rawText
@@ -406,7 +406,7 @@ class LLMService {
             log.debug("Context hint: \(hint)")
         }
 
-        let systemPrompt = buildSystemPrompt(contextHint: contextHint, translateMode: translateMode)
+        let systemPrompt = customSystemPrompt ?? buildSystemPrompt(contextHint: contextHint, translateMode: translateMode)
         let result = await p.complete(userMessage: rawText, systemPrompt: systemPrompt)
 
         if result.isEmpty {
