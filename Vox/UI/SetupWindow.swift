@@ -12,6 +12,7 @@ class SetupWindow: NSObject, NSWindowDelegate {
         case historySettings = 3
         case test = 4
         case complete = 5
+        case launcherSettings = 6
     }
 
     struct ASRProvider {
@@ -142,15 +143,21 @@ class SetupWindow: NSObject, NSWindowDelegate {
     private var historyEnabledCheckbox: NSButton?
     private var historyRetentionPopup: NSPopUpButton?
 
+    // Launcher settings
+    private var selectedLauncherKeyCode: UInt32? = nil
+    private var selectedLauncherModifiers: UInt32? = nil
+    private var launcherHotkeyRecorder: HotkeyRecorderView?
+    private var editWindowDurationPopup: NSPopUpButton?
+
     private var onComplete: (() -> Void)?
 
     // MARK: - Step sequence
 
     private var steps: [Step] {
         if isOnboarding {
-            return [.welcome, .hotkeyMode, .apiConfig, .historySettings, .test, .complete]
+            return [.welcome, .hotkeyMode, .apiConfig, .historySettings, .launcherSettings, .test, .complete]
         } else {
-            return [.hotkeyMode, .apiConfig, .historySettings]
+            return [.hotkeyMode, .apiConfig, .historySettings, .launcherSettings]
         }
     }
 
@@ -266,6 +273,10 @@ class SetupWindow: NSObject, NSWindowDelegate {
         if currentStep == .apiConfig && asrPopup != nil {
             captureAPIConfigState()
         }
+        if currentStep == .launcherSettings, let recorder = launcherHotkeyRecorder {
+            selectedLauncherKeyCode = recorder.keyCode
+            selectedLauncherModifiers = recorder.modifiers
+        }
 
         currentStep = step
         contentContainer.subviews.forEach { $0.removeFromSuperview() }
@@ -281,6 +292,8 @@ class SetupWindow: NSObject, NSWindowDelegate {
             applyConfigState()
         case .historySettings:
             view = buildHistorySettings()
+        case .launcherSettings:
+            view = buildLauncherSettings()
         case .test:
             view = buildTest()
         case .complete:
@@ -312,7 +325,7 @@ class SetupWindow: NSObject, NSWindowDelegate {
         switch currentStep {
         case .welcome:
             nextButton.title = "Get Started"
-        case .historySettings where !isOnboarding:
+        case .launcherSettings where !isOnboarding:
             nextButton.title = "Save"
         case .test:
             nextButton.title = "Finish Setup"
@@ -354,6 +367,10 @@ class SetupWindow: NSObject, NSWindowDelegate {
 
         if currentStep == .historySettings {
             saveHistorySettings()
+        }
+
+        if currentStep == .launcherSettings {
+            saveLauncherSettings()
         }
 
         let idx = currentStepIndex
@@ -1065,6 +1082,147 @@ class SetupWindow: NSObject, NSWindowDelegate {
         }
     }
 
+    // MARK: - Step: Launcher Settings
+
+    private func buildLauncherSettings() -> NSView {
+        let container = NSView()
+
+        let stack = NSStackView()
+        stack.orientation = .vertical
+        stack.alignment = .centerX
+        stack.spacing = 20
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(stack)
+
+        NSLayoutConstraint.activate([
+            stack.centerXAnchor.constraint(equalTo: container.centerXAnchor),
+            stack.centerYAnchor.constraint(equalTo: container.centerYAnchor, constant: -10),
+            stack.widthAnchor.constraint(lessThanOrEqualTo: container.widthAnchor, constant: -80),
+        ])
+
+        let title = NSTextField(labelWithString: "Launcher Settings")
+        title.font = .systemFont(ofSize: 24, weight: .bold)
+        title.textColor = .labelColor
+        title.alignment = .center
+        stack.addArrangedSubview(title)
+
+        let subtitle = NSTextField(wrappingLabelWithString: "Hold the Launcher hotkey and speak a command.\nVox can open apps, search the web, control volume, and more.")
+        subtitle.font = .systemFont(ofSize: 14)
+        subtitle.textColor = .secondaryLabelColor
+        subtitle.alignment = .center
+        stack.addArrangedSubview(subtitle)
+
+        let card = makeCard()
+        let cardStack = NSStackView()
+        cardStack.orientation = .vertical
+        cardStack.alignment = .leading
+        cardStack.spacing = 20
+        cardStack.translatesAutoresizingMaskIntoConstraints = false
+        card.addSubview(cardStack)
+        pinInside(cardStack, to: card, inset: 28)
+
+        // Launcher hotkey
+        let hotkeyRow = NSStackView()
+        hotkeyRow.orientation = .horizontal
+        hotkeyRow.spacing = 12
+        hotkeyRow.alignment = .centerY
+
+        let hotkeyLabel = NSTextField(labelWithString: "Launcher Hotkey:")
+        hotkeyLabel.font = .systemFont(ofSize: 15)
+        hotkeyLabel.textColor = .labelColor
+        hotkeyRow.addArrangedSubview(hotkeyLabel)
+
+        let defaultKeyCode = selectedLauncherKeyCode ?? UInt32(kVK_ANSI_Grave)
+        let defaultMods = selectedLauncherModifiers ?? UInt32(optionKey)
+        let recorder = HotkeyRecorderView(keyCode: defaultKeyCode, modifiers: defaultMods)
+        recorder.translatesAutoresizingMaskIntoConstraints = false
+        recorder.widthAnchor.constraint(equalToConstant: 160).isActive = true
+        recorder.heightAnchor.constraint(equalToConstant: 36).isActive = true
+        recorder.onHotkeyChanged = { [weak self] code, mods in
+            self?.selectedLauncherKeyCode = code
+            self?.selectedLauncherModifiers = mods
+        }
+        launcherHotkeyRecorder = recorder
+        hotkeyRow.addArrangedSubview(recorder)
+
+        let hotkeyHint = NSTextField(labelWithString: "Click to change")
+        hotkeyHint.font = .systemFont(ofSize: 12)
+        hotkeyHint.textColor = .tertiaryLabelColor
+        hotkeyRow.addArrangedSubview(hotkeyHint)
+
+        cardStack.addArrangedSubview(hotkeyRow)
+
+        // Edit window duration
+        let editRow = NSStackView()
+        editRow.orientation = .horizontal
+        editRow.spacing = 12
+        editRow.alignment = .centerY
+
+        let editLabel = NSTextField(labelWithString: "Edit window after dictation:")
+        editLabel.font = .systemFont(ofSize: 15)
+        editLabel.textColor = .labelColor
+        editRow.addArrangedSubview(editLabel)
+
+        let popup = NSPopUpButton()
+        popup.addItems(withTitles: ["Off", "1 second", "3 seconds", "5 seconds"])
+        popup.font = .systemFont(ofSize: 13)
+
+        let currentDuration = ConfigService.shared.editWindowDuration
+        let currentEnabled = ConfigService.shared.editWindowEnabled
+        if !currentEnabled || currentDuration <= 0 {
+            popup.selectItem(at: 0)
+        } else if currentDuration <= 1.5 {
+            popup.selectItem(at: 1)
+        } else if currentDuration <= 4.0 {
+            popup.selectItem(at: 2)
+        } else {
+            popup.selectItem(at: 3)
+        }
+        editWindowDurationPopup = popup
+        editRow.addArrangedSubview(popup)
+
+        cardStack.addArrangedSubview(editRow)
+
+        // Info text
+        let info = NSTextField(wrappingLabelWithString: "After dictating, you can re-press the dictation hotkey within the edit window\nto modify the text you just spoke (e.g., \"make it more formal\").")
+        info.font = .systemFont(ofSize: 12)
+        info.textColor = .tertiaryLabelColor
+        cardStack.addArrangedSubview(info)
+
+        stack.addArrangedSubview(card)
+        card.widthAnchor.constraint(equalToConstant: 520).isActive = true
+
+        return container
+    }
+
+    private func saveLauncherSettings() {
+        // Capture recorder state
+        if let recorder = launcherHotkeyRecorder {
+            selectedLauncherKeyCode = recorder.keyCode
+            selectedLauncherModifiers = recorder.modifiers
+        }
+
+        // Save launcher hotkey
+        if let kc = selectedLauncherKeyCode {
+            ConfigService.shared.write(key: "launcherHotkeyKeyCode", value: Int(kc))
+            ConfigService.shared.write(key: "launcherHotkeyModifiers", value: Int(selectedLauncherModifiers ?? 0))
+            NSLog("Vox: Launcher hotkey saved")
+        }
+
+        // Save edit window duration
+        let popupIndex = editWindowDurationPopup?.indexOfSelectedItem ?? 2
+        let durationMap: [Int: (enabled: Bool, duration: Double)] = [
+            0: (false, 0),
+            1: (true, 1.0),
+            2: (true, 3.0),
+            3: (true, 5.0),
+        ]
+        let (enabled, duration) = durationMap[popupIndex] ?? (true, 3.0)
+        ConfigService.shared.write(key: "editWindowEnabled", value: enabled)
+        ConfigService.shared.write(key: "editWindowDuration", value: duration)
+        NSLog("Vox: Edit window: enabled=\(enabled), duration=\(duration)s")
+    }
+
     // MARK: - Step: Complete
 
     private func buildComplete() -> NSView {
@@ -1278,12 +1436,26 @@ class SetupWindow: NSObject, NSWindowDelegate {
             ]
         }
 
-        // Preserve userContext
+        // Preserve userContext and launcher settings from existing config
         let configPath = NSHomeDirectory() + "/.vox/config.json"
         if let data = FileManager.default.contents(atPath: configPath),
-           let existing = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-           let ctx = existing["userContext"] as? String, !ctx.isEmpty {
-            config["userContext"] = ctx
+           let existing = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            if let ctx = existing["userContext"] as? String, !ctx.isEmpty {
+                config["userContext"] = ctx
+            }
+            // Preserve launcher hotkey settings (written by saveLauncherSettings)
+            if let lkc = existing["launcherHotkeyKeyCode"] as? Int {
+                config["launcherHotkeyKeyCode"] = lkc
+            }
+            if let lmod = existing["launcherHotkeyModifiers"] as? Int {
+                config["launcherHotkeyModifiers"] = lmod
+            }
+            if let ewe = existing["editWindowEnabled"] as? Bool {
+                config["editWindowEnabled"] = ewe
+            }
+            if let ewd = existing["editWindowDuration"] as? Double {
+                config["editWindowDuration"] = ewd
+            }
         }
 
         let configDir = NSHomeDirectory() + "/.vox"
@@ -1370,6 +1542,14 @@ class SetupWindow: NSObject, NSWindowDelegate {
                     break
                 }
             }
+        }
+
+        // Load launcher hotkey settings
+        if let lkc = json["launcherHotkeyKeyCode"] as? Int {
+            selectedLauncherKeyCode = UInt32(lkc)
+        }
+        if let lmod = json["launcherHotkeyModifiers"] as? Int {
+            selectedLauncherModifiers = UInt32(lmod)
         }
     }
 

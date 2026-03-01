@@ -94,6 +94,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let hkItem = NSMenuItem(title: "Hotkey: \(hotkey.hotkeyDisplayString)", action: nil, keyEquivalent: "")
         hotkeyMenuItem = hkItem
         menu.addItem(hkItem)
+        menu.addItem(NSMenuItem(title: "Launcher: \(hotkey.launcherHotkeyDisplayString)", action: nil, keyEquivalent: ""))
         menu.addItem(NSMenuItem.separator())
         menu.addItem(NSMenuItem(title: "Settings...", action: #selector(openSettings), keyEquivalent: ","))
 
