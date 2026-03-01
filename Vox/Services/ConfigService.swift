@@ -46,6 +46,16 @@ final class ConfigService {
     var hotkeyKeyCode: UInt32 { UInt32(raw["hotkeyKeyCode"] as? Int ?? 50) }  // kVK_ANSI_Grave
     var hotkeyModifiers: UInt32 { UInt32(raw["hotkeyModifiers"] as? Int ?? 4096) }  // controlKey
 
+    // Launcher hotkey (optional — only if user has configured it)
+    var launcherHotkeyKeyCode: UInt32? {
+        guard let v = raw["launcherHotkeyKeyCode"] as? Int else { return nil }
+        return UInt32(v)
+    }
+    var launcherHotkeyModifiers: UInt32? {
+        guard let v = raw["launcherHotkeyModifiers"] as? Int else { return nil }
+        return UInt32(v)
+    }
+
     // MARK: - ASR
 
     var asrProvider: String { raw["asr"] as? String ?? "whisper" }
