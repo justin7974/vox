@@ -13,12 +13,25 @@ class DictationCoordinator {
 
     private let sm = VoxStateMachine()
 
+    // Edit window state
+    private var lastInsertedText: String?
+    private var lastInsertedLength: Int = 0
+    private var editWindowTimer: Timer?
+    private var keyEventMonitor: Any?
+    private var isInEditMode: Bool = false
+
     /// Called when setup wizard needs to be shown (no config)
     var onNeedsSetup: (() -> Void)?
 
     // MARK: - Public API (called by AppDelegate via HotkeyDelegate)
 
     func hotkeyPressed(mode: String) {
+        // Edit window intercept: re-pressing hotkey enters edit recording
+        if sm.phase == .editWindow {
+            startEditRecording()
+            return
+        }
+
         switch mode {
         case "hold":
             if sm.phase == .idle {
@@ -36,7 +49,11 @@ class DictationCoordinator {
 
     func hotkeyReleased(mode: String) {
         if mode == "hold", case .recording = sm.phase {
-            stopAndProcess()
+            if isInEditMode {
+                stopAndProcessEdit()
+            } else {
+                stopAndProcess()
+            }
         }
     }
 
@@ -44,6 +61,8 @@ class DictationCoordinator {
         if case .recording = sm.phase {
             _ = audio.stopRecording()
         }
+        cancelEditWindowCleanup()
+        isInEditMode = false
     }
 
     // MARK: - Recording
@@ -58,7 +77,11 @@ class DictationCoordinator {
             }
             startRecording()
         case .recording:
-            stopAndProcess()
+            if isInEditMode {
+                stopAndProcessEdit()
+            } else {
+                stopAndProcess()
+            }
         default:
             break
         }
@@ -74,6 +97,8 @@ class DictationCoordinator {
         NSSound(named: "Tink")?.play()
         NSLog("Vox: Recording started")
     }
+
+    // MARK: - Normal Dictation Pipeline
 
     private func stopAndProcess() {
         audio.onAudioLevel = nil
@@ -161,12 +186,212 @@ class DictationCoordinator {
                     self.history.addRecord(text: finalText)
                 }
 
-                self.sm.transition(to: .idle)
-                self.overlay.show(phase: self.sm.phase)
+                // Enter edit window if enabled (not for translate mode)
+                if !isTranslate && self.config.editWindowEnabled && self.config.editWindowDuration > 0 {
+                    self.lastInsertedText = finalText
+                    self.lastInsertedLength = finalText.count
+                    self.enterEditWindow()
+                } else {
+                    self.sm.transition(to: .idle)
+                    self.overlay.show(phase: self.sm.phase)
+                }
+
                 NSSound(named: "Glass")?.play()
             }
 
             try? FileManager.default.removeItem(at: audioURL)
+        }
+    }
+
+    // MARK: - Edit Window
+
+    private func enterEditWindow() {
+        let duration = config.editWindowDuration
+        sm.transition(to: .editWindow)
+        overlay.showEditWindow(duration: duration)
+
+        editWindowTimer = Timer.scheduledTimer(withTimeInterval: duration, repeats: false) { [weak self] _ in
+            self?.expireEditWindow()
+        }
+
+        // Any other keyboard input cancels the edit window
+        keyEventMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] _ in
+            guard let self = self, self.sm.phase == .editWindow else { return }
+            self.expireEditWindow()
+        }
+    }
+
+    private func expireEditWindow() {
+        cancelEditWindowCleanup()
+        if sm.phase == .editWindow {
+            sm.transition(to: .idle)
+            overlay.hide()
+        }
+        lastInsertedText = nil
+        lastInsertedLength = 0
+    }
+
+    private func cancelEditWindowCleanup() {
+        editWindowTimer?.invalidate()
+        editWindowTimer = nil
+        if let monitor = keyEventMonitor {
+            NSEvent.removeMonitor(monitor)
+            keyEventMonitor = nil
+        }
+    }
+
+    // MARK: - Edit Mode Recording
+
+    private func startEditRecording() {
+        cancelEditWindowCleanup()
+
+        // Select last inserted text via Accessibility API
+        selectLastInsertedText()
+
+        isInEditMode = true
+        sm.transition(to: .recording(.dictation))
+        overlay.showEditRecording()
+        audio.onAudioLevel = { [weak self] level in
+            self?.overlay.updateAudioLevel(level)
+        }
+        audio.startRecording()
+        NSSound(named: "Tink")?.play()
+        NSLog("Vox: Edit recording started")
+    }
+
+    private func stopAndProcessEdit() {
+        audio.onAudioLevel = nil
+
+        guard let audioURL = audio.stopRecording() else {
+            sm.transition(to: .idle)
+            overlay.hide()
+            isInEditMode = false
+            return
+        }
+
+        let fileSize = (try? FileManager.default.attributesOfItem(atPath: audioURL.path)[.size] as? Int) ?? 0
+        if fileSize < 16000 {
+            NSLog("Vox: Edit recording too short, ignoring")
+            sm.transition(to: .idle)
+            overlay.hide()
+            isInEditMode = false
+            try? FileManager.default.removeItem(at: audioURL)
+            return
+        }
+
+        sm.transition(to: .transcribing)
+        overlay.showEditProcessing()
+        NSSound(named: "Pop")?.play()
+
+        let originalText = lastInsertedText ?? ""
+
+        Task { [weak self] in
+            guard let self = self else { return }
+
+            // Step 1: Transcribe the edit instruction
+            let editInstruction = await self.stt.transcribe(audioFile: audioURL)
+            self.log.debug("Edit instruction: [\(editInstruction)]")
+
+            guard !editInstruction.isEmpty else {
+                self.log.debug("Edit: empty instruction, aborting")
+                await MainActor.run {
+                    self.sm.transition(to: .idle)
+                    self.overlay.hide()
+                    self.isInEditMode = false
+                }
+                try? FileManager.default.removeItem(at: audioURL)
+                return
+            }
+
+            // Step 2: Apply edit via LLM
+            await MainActor.run {
+                self.sm.transition(to: .postProcessing)
+            }
+
+            let userMessage = "原文：\(originalText)\n\n修改指令：\(editInstruction)"
+            let editedText = await self.llm.process(rawText: userMessage, customSystemPrompt: LLMService.editPrompt)
+            self.log.debug("Edit result: [\(editedText)]")
+
+            guard !editedText.isEmpty else {
+                await MainActor.run {
+                    self.sm.transition(to: .idle)
+                    self.overlay.hide()
+                    self.isInEditMode = false
+                }
+                try? FileManager.default.removeItem(at: audioURL)
+                return
+            }
+
+            // Step 3: Paste edited text (replaces AX selection)
+            await MainActor.run {
+                self.sm.transition(to: .pasting)
+                self.paste.paste(text: editedText)
+
+                self.history.addRecord(text: editedText, originalText: originalText)
+
+                self.sm.transition(to: .idle)
+                self.overlay.showSuccess("✓ 已修改")
+                NSSound(named: "Glass")?.play()
+
+                self.isInEditMode = false
+                self.lastInsertedText = nil
+                self.lastInsertedLength = 0
+            }
+
+            try? FileManager.default.removeItem(at: audioURL)
+        }
+    }
+
+    // MARK: - Accessibility Helpers
+
+    private func selectLastInsertedText() {
+        guard lastInsertedLength > 0 else { return }
+        guard let app = NSWorkspace.shared.frontmostApplication else {
+            log.debug("Edit: no frontmost app")
+            return
+        }
+
+        let appRef = AXUIElementCreateApplication(app.processIdentifier)
+
+        var focusedRef: CFTypeRef?
+        guard AXUIElementCopyAttributeValue(appRef, kAXFocusedUIElementAttribute as CFString, &focusedRef) == .success else {
+            log.debug("Edit: cannot get focused element")
+            return
+        }
+
+        let element = focusedRef as! AXUIElement
+
+        // Get total character count
+        var totalChars: Int = 0
+        var numRef: CFTypeRef?
+        if AXUIElementCopyAttributeValue(element, kAXNumberOfCharactersAttribute as CFString, &numRef) == .success,
+           let n = numRef as? Int {
+            totalChars = n
+        } else {
+            // Fallback: read full text value
+            var valueRef: CFTypeRef?
+            guard AXUIElementCopyAttributeValue(element, kAXValueAttribute as CFString, &valueRef) == .success,
+                  let text = valueRef as? String else {
+                log.debug("Edit: cannot determine text length")
+                return
+            }
+            totalChars = text.count
+        }
+
+        let start = max(0, totalChars - lastInsertedLength)
+        let length = min(lastInsertedLength, totalChars)
+        var range = CFRange(location: start, length: length)
+
+        guard let rangeValue = AXValueCreate(.cfRange, &range) else {
+            log.debug("Edit: cannot create AXValue for range")
+            return
+        }
+
+        let result = AXUIElementSetAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, rangeValue)
+        if result == .success {
+            log.debug("Edit: selected \(length) chars at offset \(start)")
+        } else {
+            log.debug("Edit: selection failed (status: \(result.rawValue))")
         }
     }
 }

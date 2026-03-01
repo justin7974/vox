@@ -2,10 +2,15 @@ import Cocoa
 import QuartzCore
 
 /// Floating status overlay at the bottom-center of the screen.
-/// Shows recording / processing state with animation.
+/// Shows recording / processing / edit state with animation.
 class StatusOverlay {
     private var window: NSWindow?
     private var contentView: OverlayContentView?
+    private var autoDismissTimer: Timer?
+
+    // Design spec colors
+    static let slateBlue = NSColor(calibratedRed: 0x5a/255.0, green: 0x98/255.0, blue: 0xd0/255.0, alpha: 1.0)
+    static let terracotta = NSColor(calibratedRed: 0xd4/255.0, green: 0x71/255.0, blue: 0x6a/255.0, alpha: 1.0)
 
     func show(phase: VoxPhase) {
         if phase == .idle {
@@ -13,34 +18,68 @@ class StatusOverlay {
             return
         }
 
-        if window == nil {
-            createWindow()
-        }
-
+        ensureWindow()
         guard let contentView = contentView, let window = window else { return }
 
         switch phase {
         case .recording:
+            adjustWidth(for: "正在聆听…")
             contentView.showRecording(text: "正在聆听…")
         case .transcribing, .postProcessing, .pasting:
+            adjustWidth(for: "奋笔疾书…")
             contentView.showProcessing(text: "奋笔疾书…")
         default:
             break
         }
 
-        positionWindow(window)
+        positionAndShow(window)
+    }
 
-        // If window is already visible (e.g. recording → processing), just update content
-        let alreadyVisible = window.isVisible && window.alphaValue > 0.5
-        if alreadyVisible {
-            window.alphaValue = 1.0
-        } else {
-            window.alphaValue = 0
-            window.orderFrontRegardless()
-            NSAnimationContext.runAnimationGroup { ctx in
-                ctx.duration = 0.2
-                window.animator().alphaValue = 1.0
-            }
+    /// Edit window hint with countdown bar
+    func showEditWindow(duration: TimeInterval) {
+        autoDismissTimer?.invalidate()
+        ensureWindow()
+        guard let contentView = contentView, let window = window else { return }
+
+        adjustWidth(for: "再按一次可修改", extraTrailing: 28)
+        contentView.showEditWindow(text: "再按一次可修改", duration: duration)
+        positionAndShow(window)
+    }
+
+    /// Edit mode recording (blue dot)
+    func showEditRecording() {
+        autoDismissTimer?.invalidate()
+        ensureWindow()
+        guard let contentView = contentView, let window = window else { return }
+
+        adjustWidth(for: "修改模式：说出修改指令…")
+        contentView.showEditRecording(text: "修改模式：说出修改指令…")
+        positionAndShow(window)
+    }
+
+    /// Edit mode processing
+    func showEditProcessing() {
+        autoDismissTimer?.invalidate()
+        ensureWindow()
+        guard let contentView = contentView, let window = window else { return }
+
+        adjustWidth(for: "正在修改…")
+        contentView.showProcessing(text: "正在修改…")
+        positionAndShow(window)
+    }
+
+    /// Success message, auto-dismiss
+    func showSuccess(_ message: String, autoDismissAfter: TimeInterval = 0.8) {
+        autoDismissTimer?.invalidate()
+        ensureWindow()
+        guard let contentView = contentView, let window = window else { return }
+
+        adjustWidth(for: message)
+        contentView.showSuccess(text: message)
+        positionAndShow(window)
+
+        autoDismissTimer = Timer.scheduledTimer(withTimeInterval: autoDismissAfter, repeats: false) { [weak self] _ in
+            self?.hide()
         }
     }
 
@@ -53,6 +92,8 @@ class StatusOverlay {
     }
 
     func hide() {
+        autoDismissTimer?.invalidate()
+        autoDismissTimer = nil
         guard let window = window else { return }
         contentView?.stopAllAnimations()
         NSAnimationContext.runAnimationGroup({ ctx in
@@ -64,6 +105,10 @@ class StatusOverlay {
     }
 
     // MARK: - Window Setup
+
+    private func ensureWindow() {
+        if window == nil { createWindow() }
+    }
 
     private func createWindow() {
         let view = OverlayContentView(frame: NSRect(x: 0, y: 0, width: 160, height: 48))
@@ -81,12 +126,32 @@ class StatusOverlay {
         window = w
     }
 
-    private func positionWindow(_ window: NSWindow) {
+    private func adjustWidth(for text: String, extraTrailing: CGFloat = 0) {
+        guard let window = window else { return }
+        let font = NSFont.systemFont(ofSize: 14, weight: .medium)
+        let textWidth = ceil((text as NSString).size(withAttributes: [.font: font]).width)
+        let width = max(160, 44 + textWidth + 16 + extraTrailing)
+        window.setContentSize(NSSize(width: width, height: 48))
+    }
+
+    private func positionAndShow(_ window: NSWindow) {
         guard let screen = NSScreen.main else { return }
         let screenFrame = screen.visibleFrame
         let x = screenFrame.midX - window.frame.width / 2
         let y = screenFrame.origin.y + 80
         window.setFrameOrigin(NSPoint(x: x, y: y))
+
+        let alreadyVisible = window.isVisible && window.alphaValue > 0.5
+        if alreadyVisible {
+            window.alphaValue = 1.0
+        } else {
+            window.alphaValue = 0
+            window.orderFrontRegardless()
+            NSAnimationContext.runAnimationGroup { ctx in
+                ctx.duration = 0.2
+                window.animator().alphaValue = 1.0
+            }
+        }
     }
 }
 
@@ -97,6 +162,7 @@ private class OverlayContentView: NSView {
     private let textLabel = NSTextField(labelWithString: "")
     private let dotView = DotView(frame: NSRect(x: 0, y: 0, width: 24, height: 24))
     private let penLabel = NSTextField(labelWithString: "")
+    private let countdownBarLayer = CALayer()
 
     override init(frame: NSRect) {
         super.init(frame: frame)
@@ -149,9 +215,26 @@ private class OverlayContentView: NSView {
             textLabel.centerYAnchor.constraint(equalTo: centerYAnchor),
             textLabel.trailingAnchor.constraint(lessThanOrEqualTo: trailingAnchor, constant: -16),
         ])
+
+        // Countdown bar (positioned via layout)
+        countdownBarLayer.backgroundColor = StatusOverlay.slateBlue.cgColor
+        countdownBarLayer.cornerRadius = 1.5
+        countdownBarLayer.isHidden = true
+        layer?.addSublayer(countdownBarLayer)
     }
 
     required init?(coder: NSCoder) { fatalError() }
+
+    override func layout() {
+        super.layout()
+        // Position countdown bar at right edge
+        countdownBarLayer.frame = CGRect(
+            x: bounds.width - 12,
+            y: (bounds.height - 20) / 2,
+            width: 3,
+            height: 20
+        )
+    }
 
     func showRecording(text: String) {
         stopAllAnimations()
@@ -159,6 +242,7 @@ private class OverlayContentView: NSView {
         dotView.setColor(.systemRed)
         dotView.reset()
         penLabel.isHidden = true
+        countdownBarLayer.isHidden = true
         textLabel.stringValue = text
         alphaValue = 1.0
     }
@@ -167,7 +251,61 @@ private class OverlayContentView: NSView {
         stopAllAnimations()
         dotView.isHidden = true
         penLabel.isHidden = false
+        countdownBarLayer.isHidden = true
         startWritingAnimation()
+        textLabel.stringValue = text
+        alphaValue = 1.0
+    }
+
+    func showEditWindow(text: String, duration: TimeInterval) {
+        stopAllAnimations()
+        dotView.isHidden = false
+        dotView.setColor(StatusOverlay.slateBlue)
+        dotView.reset()
+        dotView.startPulse()
+        penLabel.isHidden = true
+        textLabel.stringValue = text
+        alphaValue = 1.0
+
+        // Show and animate countdown bar
+        countdownBarLayer.isHidden = false
+        needsLayout = true
+        layoutSubtreeIfNeeded()
+
+        let fullHeight: CGFloat = 20
+        countdownBarLayer.frame = CGRect(
+            x: bounds.width - 12,
+            y: (bounds.height - fullHeight) / 2,
+            width: 3,
+            height: fullHeight
+        )
+
+        let anim = CABasicAnimation(keyPath: "bounds.size.height")
+        anim.fromValue = fullHeight
+        anim.toValue = 0
+        anim.duration = duration
+        anim.fillMode = .forwards
+        anim.isRemovedOnCompletion = false
+        anim.timingFunction = CAMediaTimingFunction(name: .linear)
+        countdownBarLayer.add(anim, forKey: "countdown")
+    }
+
+    func showEditRecording(text: String) {
+        stopAllAnimations()
+        dotView.isHidden = false
+        dotView.setColor(StatusOverlay.slateBlue)
+        dotView.reset()
+        penLabel.isHidden = true
+        countdownBarLayer.isHidden = true
+        textLabel.stringValue = text
+        alphaValue = 1.0
+    }
+
+    func showSuccess(text: String) {
+        stopAllAnimations()
+        dotView.isHidden = true
+        penLabel.isHidden = true
+        countdownBarLayer.isHidden = true
         textLabel.stringValue = text
         alphaValue = 1.0
     }
@@ -179,6 +317,8 @@ private class OverlayContentView: NSView {
     func stopAllAnimations() {
         dotView.stopPulse()
         penLabel.layer?.removeAllAnimations()
+        countdownBarLayer.removeAllAnimations()
+        countdownBarLayer.isHidden = true
     }
 
     private func startWritingAnimation() {

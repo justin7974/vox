@@ -108,6 +108,16 @@ final class ConfigService {
         set { write(key: "historyRetentionDays", value: newValue) }
     }
 
+    // MARK: - Edit Window
+
+    var editWindowEnabled: Bool {
+        raw["editWindowEnabled"] as? Bool ?? true
+    }
+
+    var editWindowDuration: Double {
+        raw["editWindowDuration"] as? Double ?? 3.0
+    }
+
     // MARK: - Migration
 
     private func migrateConfigDir() {
