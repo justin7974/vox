@@ -4,7 +4,7 @@ import Foundation
 
 protocol LLMProvider {
     var name: String { get }
-    func complete(userMessage: String, systemPrompt: String) -> String
+    func complete(userMessage: String, systemPrompt: String) async -> String
 }
 
 // MARK: - AnthropicProvider
@@ -22,7 +22,7 @@ struct AnthropicProvider: LLMProvider {
         self.model = model
     }
 
-    func complete(userMessage: String, systemPrompt: String) -> String {
+    func complete(userMessage: String, systemPrompt: String) async -> String {
         guard let url = URL(string: baseURL) else {
             log.debug("Invalid API URL: \(baseURL)")
             return ""
@@ -50,58 +50,47 @@ struct AnthropicProvider: LLMProvider {
         }
         request.httpBody = httpBody
 
-        let semaphore = DispatchSemaphore(value: 0)
-        var result = ""
-
-        let task = URLSession.shared.dataTask(with: request) { data, response, error in
-            defer { semaphore.signal() }
-
-            if let error = error {
-                log.debug("Anthropic API error: \(error.localizedDescription)")
-                return
-            }
-
+        let data: Data
+        do {
+            let (responseData, response) = try await URLSession.shared.data(for: request)
+            data = responseData
             if let httpResponse = response as? HTTPURLResponse {
                 log.debug("Anthropic API HTTP status: \(httpResponse.statusCode)")
             }
-
-            guard let data = data else {
-                log.debug("Anthropic API no response data")
-                return
-            }
-
-            let rawResponse = String(data: data, encoding: .utf8) ?? "???"
-            log.debug("Anthropic API raw response: \(String(rawResponse.prefix(500)))")
-
-            guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                log.debug("Failed to parse JSON")
-                return
-            }
-
-            if let errorInfo = json["error"] as? [String: Any],
-               let message = errorInfo["message"] as? String {
-                log.debug("Anthropic API returned error: \(message)")
-                return
-            }
-
-            if let content = json["content"] as? [[String: Any]] {
-                // Find the "text" type block (skip "thinking" blocks from providers like MiniMax)
-                let textBlock = content.first(where: { ($0["type"] as? String) == "text" }) ?? content.first
-                if let text = textBlock?["text"] as? String {
-                    result = text.trimmingCharacters(in: .whitespacesAndNewlines)
-                    log.debug("Anthropic API result: [\(result)]")
-                } else {
-                    log.debug("Could not extract text from Anthropic content blocks")
-                }
-            } else {
-                log.debug("Could not extract content array from Anthropic response")
-            }
+        } catch {
+            log.debug("Anthropic API error: \(error.localizedDescription)")
+            return ""
         }
 
-        task.resume()
-        semaphore.wait()
+        let rawResponse = String(data: data, encoding: .utf8) ?? "???"
+        log.debug("Anthropic API raw response: \(String(rawResponse.prefix(500)))")
 
-        return result
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            log.debug("Failed to parse JSON")
+            return ""
+        }
+
+        if let errorInfo = json["error"] as? [String: Any],
+           let message = errorInfo["message"] as? String {
+            log.debug("Anthropic API returned error: \(message)")
+            return ""
+        }
+
+        if let content = json["content"] as? [[String: Any]] {
+            // Find the "text" type block (skip "thinking" blocks from providers like MiniMax)
+            let textBlock = content.first(where: { ($0["type"] as? String) == "text" }) ?? content.first
+            if let text = textBlock?["text"] as? String {
+                let result = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                log.debug("Anthropic API result: [\(result)]")
+                return result
+            } else {
+                log.debug("Could not extract text from Anthropic content blocks")
+                return ""
+            }
+        } else {
+            log.debug("Could not extract content array from Anthropic response")
+            return ""
+        }
     }
 }
 
@@ -120,7 +109,7 @@ struct OpenAIProvider: LLMProvider {
         self.model = model
     }
 
-    func complete(userMessage: String, systemPrompt: String) -> String {
+    func complete(userMessage: String, systemPrompt: String) async -> String {
         guard let url = URL(string: baseURL) else {
             log.debug("Invalid API URL: \(baseURL)")
             return ""
@@ -148,54 +137,42 @@ struct OpenAIProvider: LLMProvider {
         }
         request.httpBody = httpBody
 
-        let semaphore = DispatchSemaphore(value: 0)
-        var result = ""
-
-        let task = URLSession.shared.dataTask(with: request) { data, response, error in
-            defer { semaphore.signal() }
-
-            if let error = error {
-                log.debug("OpenAI API error: \(error.localizedDescription)")
-                return
-            }
-
+        let data: Data
+        do {
+            let (responseData, response) = try await URLSession.shared.data(for: request)
+            data = responseData
             if let httpResponse = response as? HTTPURLResponse {
                 log.debug("OpenAI API HTTP status: \(httpResponse.statusCode)")
             }
-
-            guard let data = data else {
-                log.debug("OpenAI API no response data")
-                return
-            }
-
-            let rawResponse = String(data: data, encoding: .utf8) ?? "???"
-            log.debug("OpenAI API raw response: \(String(rawResponse.prefix(500)))")
-
-            guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                log.debug("Failed to parse JSON")
-                return
-            }
-
-            if let errorInfo = json["error"] as? [String: Any],
-               let message = errorInfo["message"] as? String {
-                log.debug("OpenAI API returned error: \(message)")
-                return
-            }
-
-            if let choices = json["choices"] as? [[String: Any]],
-               let message = choices.first?["message"] as? [String: Any],
-               let text = message["content"] as? String {
-                result = text.trimmingCharacters(in: .whitespacesAndNewlines)
-                log.debug("OpenAI API result: [\(result)]")
-            } else {
-                log.debug("Could not extract choices[0].message.content from OpenAI response")
-            }
+        } catch {
+            log.debug("OpenAI API error: \(error.localizedDescription)")
+            return ""
         }
 
-        task.resume()
-        semaphore.wait()
+        let rawResponse = String(data: data, encoding: .utf8) ?? "???"
+        log.debug("OpenAI API raw response: \(String(rawResponse.prefix(500)))")
 
-        return result
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            log.debug("Failed to parse JSON")
+            return ""
+        }
+
+        if let errorInfo = json["error"] as? [String: Any],
+           let message = errorInfo["message"] as? String {
+            log.debug("OpenAI API returned error: \(message)")
+            return ""
+        }
+
+        if let choices = json["choices"] as? [[String: Any]],
+           let message = choices.first?["message"] as? [String: Any],
+           let text = message["content"] as? String {
+            let result = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            log.debug("OpenAI API result: [\(result)]")
+            return result
+        } else {
+            log.debug("Could not extract choices[0].message.content from OpenAI response")
+            return ""
+        }
     }
 }
 
@@ -418,7 +395,7 @@ class LLMService {
         return provider != nil
     }
 
-    func process(rawText: String, contextHint: String? = nil, translateMode: Bool = false) -> String {
+    func process(rawText: String, contextHint: String? = nil, translateMode: Bool = false) async -> String {
         guard let p = provider else {
             log.debug("No LLM config, skipping post-processing")
             return rawText
@@ -430,7 +407,7 @@ class LLMService {
         }
 
         let systemPrompt = buildSystemPrompt(contextHint: contextHint, translateMode: translateMode)
-        let result = p.complete(userMessage: rawText, systemPrompt: systemPrompt)
+        let result = await p.complete(userMessage: rawText, systemPrompt: systemPrompt)
 
         if result.isEmpty {
             log.debug("LLM failed, returning raw text")

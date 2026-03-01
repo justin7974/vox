@@ -4,7 +4,7 @@ import Foundation
 
 protocol STTProvider {
     var name: String { get }
-    func transcribe(audioFile: URL) -> String
+    func transcribe(audioFile: URL) async -> String
 }
 
 // MARK: - WhisperLocalProvider
@@ -20,7 +20,7 @@ struct WhisperLocalProvider: STTProvider {
         self.modelPath = modelPath
     }
 
-    func transcribe(audioFile: URL) -> String {
+    func transcribe(audioFile: URL) async -> String {
         let process = Process()
         process.executableURL = URL(fileURLWithPath: execPath)
         process.arguments = [
@@ -35,18 +35,20 @@ struct WhisperLocalProvider: STTProvider {
         process.standardOutput = outputPipe
         process.standardError = Pipe()
 
-        do {
-            try process.run()
-            process.waitUntilExit()
-        } catch {
-            log.debug("Whisper failed: \(error)")
-            return ""
+        return await withCheckedContinuation { continuation in
+            process.terminationHandler = { _ in
+                let data = outputPipe.fileHandleForReading.readDataToEndOfFile()
+                let output = String(data: data, encoding: .utf8) ?? ""
+                continuation.resume(returning: self.parseWhisperOutput(output))
+            }
+            do {
+                try process.run()
+            } catch {
+                process.terminationHandler = nil
+                self.log.debug("Whisper failed: \(error)")
+                continuation.resume(returning: "")
+            }
         }
-
-        let data = outputPipe.fileHandleForReading.readDataToEndOfFile()
-        let output = String(data: data, encoding: .utf8) ?? ""
-
-        return parseWhisperOutput(output)
     }
 
     private func parseWhisperOutput(_ output: String) -> String {
@@ -87,7 +89,7 @@ struct QwenASRProvider: STTProvider {
         self.apiKey = apiKey
     }
 
-    func transcribe(audioFile: URL) -> String {
+    func transcribe(audioFile: URL) async -> String {
         guard let audioData = try? Data(contentsOf: audioFile) else {
             log.debug("Failed to read audio file")
             return ""
@@ -142,65 +144,52 @@ struct QwenASRProvider: STTProvider {
         request.httpBody = httpBody
         log.debug("Qwen ASR request body size: \(httpBody.count) bytes")
 
-        let semaphore = DispatchSemaphore(value: 0)
-        var result = ""
-
-        let task = URLSession.shared.dataTask(with: request) { data, response, error in
-            defer { semaphore.signal() }
-
-            if let error = error {
-                log.debug("Qwen ASR network error: \(error.localizedDescription)")
-                DispatchQueue.main.async {
-                    AppDelegate.showNotification(title: "Vox", message: "ASR network error: \(error.localizedDescription)")
-                }
-                return
-            }
-
+        let data: Data
+        do {
+            let (responseData, response) = try await URLSession.shared.data(for: request)
+            data = responseData
             if let httpResponse = response as? HTTPURLResponse {
                 log.debug("Qwen ASR HTTP status: \(httpResponse.statusCode)")
             }
-
-            guard let data = data else {
-                log.debug("Qwen ASR no response data")
-                return
+        } catch {
+            log.debug("Qwen ASR network error: \(error.localizedDescription)")
+            DispatchQueue.main.async {
+                AppDelegate.showNotification(title: "Vox", message: "ASR network error: \(error.localizedDescription)")
             }
-
-            let rawResponse = String(data: data, encoding: .utf8) ?? "???"
-            log.debug("Qwen ASR raw response: \(String(rawResponse.prefix(500)))")
-
-            guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                log.debug("Qwen ASR failed to parse JSON")
-                return
-            }
-
-            if let errorInfo = json["error"] as? [String: Any],
-               let message = errorInfo["message"] as? String {
-                log.debug("Qwen ASR API error: \(message)")
-                let shortMsg = message.contains("invalid_api_key") ? "Invalid API key. Check Settings." : "ASR API error."
-                DispatchQueue.main.async {
-                    AppDelegate.showNotification(title: "Vox", message: shortMsg)
-                }
-                return
-            }
-
-            if let choices = json["choices"] as? [[String: Any]],
-               let message = choices.first?["message"] as? [String: Any],
-               let content = message["content"] as? String {
-                result = content.trimmingCharacters(in: .whitespacesAndNewlines)
-                log.debug("Qwen ASR result: [\(result)]")
-            } else {
-                log.debug("Qwen ASR: no content in response (unexpected format)")
-            }
+            return ""
         }
 
-        task.resume()
-        semaphore.wait()
+        let rawResponse = String(data: data, encoding: .utf8) ?? "???"
+        log.debug("Qwen ASR raw response: \(String(rawResponse.prefix(500)))")
 
-        if result.isEmpty {
-            log.debug("Qwen ASR returned empty result")
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            log.debug("Qwen ASR failed to parse JSON")
+            return ""
         }
 
-        return result
+        if let errorInfo = json["error"] as? [String: Any],
+           let message = errorInfo["message"] as? String {
+            log.debug("Qwen ASR API error: \(message)")
+            let shortMsg = message.contains("invalid_api_key") ? "Invalid API key. Check Settings." : "ASR API error."
+            DispatchQueue.main.async {
+                AppDelegate.showNotification(title: "Vox", message: shortMsg)
+            }
+            return ""
+        }
+
+        if let choices = json["choices"] as? [[String: Any]],
+           let message = choices.first?["message"] as? [String: Any],
+           let content = message["content"] as? String {
+            let result = content.trimmingCharacters(in: .whitespacesAndNewlines)
+            log.debug("Qwen ASR result: [\(result)]")
+            if result.isEmpty {
+                log.debug("Qwen ASR returned empty result")
+            }
+            return result
+        } else {
+            log.debug("Qwen ASR: no content in response (unexpected format)")
+            return ""
+        }
     }
 }
 
@@ -219,7 +208,7 @@ struct WhisperAPIProvider: STTProvider {
         self.model = model
     }
 
-    func transcribe(audioFile: URL) -> String {
+    func transcribe(audioFile: URL) async -> String {
         guard let audioData = try? Data(contentsOf: audioFile) else {
             log.debug("Failed to read audio file")
             return ""
@@ -265,62 +254,49 @@ struct WhisperAPIProvider: STTProvider {
         request.httpBody = body
         log.debug("Custom ASR request: \(baseURL), model: \(model), body size: \(body.count) bytes")
 
-        let semaphore = DispatchSemaphore(value: 0)
-        var result = ""
-
-        let task = URLSession.shared.dataTask(with: request) { data, response, error in
-            defer { semaphore.signal() }
-
-            if let error = error {
-                log.debug("Custom ASR network error: \(error.localizedDescription)")
-                DispatchQueue.main.async {
-                    AppDelegate.showNotification(title: "Vox", message: "ASR network error: \(error.localizedDescription)")
-                }
-                return
-            }
-
+        let data: Data
+        do {
+            let (responseData, response) = try await URLSession.shared.data(for: request)
+            data = responseData
             if let httpResponse = response as? HTTPURLResponse {
                 log.debug("Custom ASR HTTP status: \(httpResponse.statusCode)")
             }
-
-            guard let data = data else {
-                log.debug("Custom ASR no response data")
-                return
+        } catch {
+            log.debug("Custom ASR network error: \(error.localizedDescription)")
+            DispatchQueue.main.async {
+                AppDelegate.showNotification(title: "Vox", message: "ASR network error: \(error.localizedDescription)")
             }
-
-            let rawResponse = String(data: data, encoding: .utf8) ?? "???"
-            log.debug("Custom ASR raw response: \(String(rawResponse.prefix(500)))")
-
-            guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-                log.debug("Custom ASR failed to parse JSON")
-                return
-            }
-
-            if let errorInfo = json["error"] as? [String: Any],
-               let message = errorInfo["message"] as? String {
-                log.debug("Custom ASR API error: \(message)")
-                DispatchQueue.main.async {
-                    AppDelegate.showNotification(title: "Vox", message: "ASR error: \(message)")
-                }
-                return
-            }
-
-            if let text = json["text"] as? String {
-                result = text.trimmingCharacters(in: .whitespacesAndNewlines)
-                log.debug("Custom ASR result: [\(result)]")
-            } else {
-                log.debug("Custom ASR: no 'text' field in response")
-            }
+            return ""
         }
 
-        task.resume()
-        semaphore.wait()
+        let rawResponse = String(data: data, encoding: .utf8) ?? "???"
+        log.debug("Custom ASR raw response: \(String(rawResponse.prefix(500)))")
 
-        if result.isEmpty {
-            log.debug("Custom ASR returned empty result")
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+            log.debug("Custom ASR failed to parse JSON")
+            return ""
         }
 
-        return result
+        if let errorInfo = json["error"] as? [String: Any],
+           let message = errorInfo["message"] as? String {
+            log.debug("Custom ASR API error: \(message)")
+            DispatchQueue.main.async {
+                AppDelegate.showNotification(title: "Vox", message: "ASR error: \(message)")
+            }
+            return ""
+        }
+
+        if let text = json["text"] as? String {
+            let result = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            log.debug("Custom ASR result: [\(result)]")
+            if result.isEmpty {
+                log.debug("Custom ASR returned empty result")
+            }
+            return result
+        } else {
+            log.debug("Custom ASR: no 'text' field in response")
+            return ""
+        }
     }
 }
 
@@ -347,14 +323,14 @@ class STTService {
         }
     }
 
-    func transcribe(audioFile: URL) -> String {
+    func transcribe(audioFile: URL) async -> String {
         let fileSize = (try? FileManager.default.attributesOfItem(atPath: audioFile.path)[.size] as? Int) ?? 0
         log.debug("Audio file: \(audioFile.lastPathComponent), size: \(fileSize) bytes")
 
         let p = provider
         log.debug("Using STT provider: \(p.name)")
 
-        let result = p.transcribe(audioFile: audioFile)
+        let result = await p.transcribe(audioFile: audioFile)
 
         // Hallucination filter (only for local whisper — cloud ASR doesn't hallucinate)
         if p.name == "whisper-local" {

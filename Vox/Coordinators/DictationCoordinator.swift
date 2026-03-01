@@ -113,16 +113,16 @@ class DictationCoordinator {
         NSSound(named: "Pop")?.play()
         NSLog("Vox: Recording stopped (\(fileSize) bytes, peak: \(audio.peakPower) dB), processing...")
 
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+        Task { [weak self] in
             guard let self = self else { return }
 
             self.log.debug("Step 1: Transcribe start (file: \(audioURL.lastPathComponent))")
-            let rawText = self.stt.transcribe(audioFile: audioURL)
+            let rawText = await self.stt.transcribe(audioFile: audioURL)
             self.log.debug("Step 1: Transcribe result: [\(rawText)]")
 
             guard !rawText.isEmpty else {
                 self.log.debug("Step 1: Empty result, aborting")
-                DispatchQueue.main.async {
+                await MainActor.run {
                     self.state = .idle
                     self.overlay.show(state: self.state)
                     AppDelegate.showNotification(title: "Vox", message: "Could not recognize speech. Try again.")
@@ -132,7 +132,7 @@ class DictationCoordinator {
             }
 
             self.log.debug("Step 2: LLM start (context: \(contextHint ?? "none"), translate: \(isTranslate))")
-            let cleanText = self.llm.process(rawText: rawText, contextHint: contextHint, translateMode: isTranslate)
+            let cleanText = await self.llm.process(rawText: rawText, contextHint: contextHint, translateMode: isTranslate)
             let postProcessed = cleanText.isEmpty ? rawText : cleanText
             self.log.debug("Step 2: LLM result: [\(postProcessed)]")
 
@@ -146,7 +146,7 @@ class DictationCoordinator {
             }
 
             self.log.debug("Step 4: Pasting...")
-            DispatchQueue.main.async {
+            await MainActor.run {
                 self.paste.paste(text: finalText)
                 self.log.debug("Step 4: Paste done")
 

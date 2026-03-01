@@ -923,12 +923,12 @@ class SetupWindow: NSObject, NSWindowDelegate {
 
             testRecorder = nil
 
-            DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-                let rawText = STTService.shared.transcribe(audioFile: url)
-                let cleanText = LLMService.shared.process(rawText: rawText)
+            Task { [weak self] in
+                let rawText = await STTService.shared.transcribe(audioFile: url)
+                let cleanText = await LLMService.shared.process(rawText: rawText)
                 let finalText = cleanText.isEmpty ? rawText : cleanText
 
-                DispatchQueue.main.async {
+                await MainActor.run {
                     if finalText.isEmpty {
                         self?.testResultCard?.isHidden = true
                         self?.testStatusLabel.stringValue = "Could not recognize speech. Try again."

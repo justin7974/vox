@@ -194,11 +194,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     @objc private func openPromptFile() {
         let promptPath = NSHomeDirectory() + "/.vox/prompt.txt"
         if !FileManager.default.fileExists(atPath: promptPath) {
-            // Trigger prompt file creation with comments + default prompt
-            _ = LLMService.shared.process(rawText: "")
-        }
-        // Still might not exist if PostProcessor skipped (no LLM config) — create manually
-        if !FileManager.default.fileExists(atPath: promptPath) {
+            // Create prompt file with default prompt so user can edit
             let dir = NSHomeDirectory() + "/.vox"
             try? FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
             try? LLMService.defaultPrompt.write(toFile: promptPath, atomically: true, encoding: .utf8)

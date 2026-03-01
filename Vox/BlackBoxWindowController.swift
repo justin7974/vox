@@ -156,16 +156,16 @@ class BlackBoxWindowController: NSObject, NSWindowDelegate, NSTableViewDataSourc
         sender.contentTintColor = .systemOrange
         sender.isEnabled = false
 
-        DispatchQueue.global(qos: .userInitiated).async {
+        Task {
             let appContext = ContextService.shared.detect()
             let contextHint = ContextService.shared.contextHint(for: appContext)
             let isTranslate = AppDelegate.shared.translateMode
 
             NSLog("Vox: Black Box reprocessing \(backup.url.lastPathComponent)")
-            let rawText = STTService.shared.transcribe(audioFile: backup.url)
+            let rawText = await STTService.shared.transcribe(audioFile: backup.url)
 
             guard !rawText.isEmpty else {
-                DispatchQueue.main.async {
+                await MainActor.run {
                     sender.image = origImage
                     sender.contentTintColor = origTint
                     sender.isEnabled = true
@@ -174,10 +174,10 @@ class BlackBoxWindowController: NSObject, NSWindowDelegate, NSTableViewDataSourc
                 return
             }
 
-            let cleanText = LLMService.shared.process(rawText: rawText, contextHint: contextHint, translateMode: isTranslate)
+            let cleanText = await LLMService.shared.process(rawText: rawText, contextHint: contextHint, translateMode: isTranslate)
             let finalText = cleanText.isEmpty ? rawText : cleanText
 
-            DispatchQueue.main.async {
+            await MainActor.run {
                 PasteService.shared.paste(text: finalText)
 
                 // Save to history
