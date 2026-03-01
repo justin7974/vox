@@ -539,48 +539,28 @@ final class ActionService {
             throw VoxError.actionFailed("Missing search query")
         }
 
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/bin/mdfind")
-        process.arguments = ["-name", query]
-
-        let pipe = Pipe()
-        process.standardOutput = pipe
-        process.standardError = FileHandle.nullDevice
-
-        do {
-            try process.run()
-            process.waitUntilExit()
-        } catch {
-            throw VoxError.actionFailed("搜索失败: \(error.localizedDescription)")
-        }
-
-        let data = pipe.fileHandleForReading.readDataToEndOfFile()
-        let output = String(data: data, encoding: .utf8) ?? ""
-        let files = output.components(separatedBy: "\n").filter { !$0.isEmpty }
-
-        guard !files.isEmpty else {
-            return ActionResult(success: false, message: "未找到: \(query)")
-        }
-
-        // Reveal the first result in Finder
-        let firstFile = URL(fileURLWithPath: files[0])
-        NSWorkspace.shared.activateFileViewerSelecting([firstFile])
-
-        let count = files.count
-        let name = (files[0] as NSString).lastPathComponent
-        if count == 1 {
-            return ActionResult(success: true, message: "找到: \(name)")
-        } else {
-            return ActionResult(success: true, message: "找到 \(count) 个结果，显示: \(name)")
-        }
+        // Delegate to Spotlight — instant, native UI, user can browse/preview results
+        let escaped = query.replacingOccurrences(of: "\\", with: "\\\\")
+            .replacingOccurrences(of: "\"", with: "\\\"")
+        let script = """
+        tell application "System Events"
+            keystroke " " using command down
+            delay 0.3
+            keystroke "\(escaped)"
+        end tell
+        """
+        runAppleScript(script)
+        return ActionResult(success: true, message: "搜索: \(query)")
     }
 
     // MARK: - Timer
 
     private func executeTimer(params: [String: String]) throws -> ActionResult {
-        guard let secondsStr = params["seconds"],
-              let seconds = Int(Double(secondsStr) ?? 0),
-              seconds > 0 else {
+        guard let secondsStr = params["seconds"] else {
+            throw VoxError.actionFailed("Invalid timer duration")
+        }
+        let seconds = Int(secondsStr) ?? Int(Double(secondsStr) ?? 0)
+        guard seconds > 0 else {
             throw VoxError.actionFailed("Invalid timer duration")
         }
 
