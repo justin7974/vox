@@ -1,5 +1,4 @@
 import Cocoa
-import AVFoundation
 import UserNotifications
 
 enum AppState {
@@ -12,10 +11,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     static var shared: AppDelegate!
 
     private var statusItem: NSStatusItem!
-    private var state: AppState = .idle
-    private let recorder = AudioService.shared
-    private let overlay = StatusOverlay()
     private let hotkey = HotkeyService.shared
+    private let dictation = DictationCoordinator()
     private var setupWindow: SetupWindow?
     private var historyWindowController: HistoryWindowController?
     private var blackBoxWindowController: BlackBoxWindowController?
@@ -28,6 +25,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         _ = ConfigService.shared  // trigger migration + initial load
         setupEditMenu()
         setupStatusBar()
+        dictation.onNeedsSetup = { [weak self] in self?.showSetup() }
         hotkey.delegate = self
         hotkey.register()
 
@@ -115,10 +113,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(NSMenuItem.separator())
         menu.addItem(NSMenuItem(title: "Quit", action: #selector(quit), keyEquivalent: "q"))
         statusItem.menu = menu
-    }
-
-    private func updateStatusIcon() {
-        overlay.show(state: state)
     }
 
     /// Monochrome template microphone icon for the menubar
@@ -238,135 +232,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         UNUserNotificationCenter.current().add(request)
     }
 
-    // MARK: - Recording
-
-    func toggleRecording() {
-        switch state {
-        case .idle:
-            if !config.configExists {
-                AppDelegate.showNotification(title: "Vox", message: "Please configure your API keys first.")
-                showSetup()
-                return
-            }
-            startRecording()
-        case .recording:
-            stopAndProcess()
-        case .processing:
-            break
-        }
-    }
-
-    private func startRecording() {
-        state = .recording
-        updateStatusIcon()
-        recorder.onAudioLevel = { [weak self] level in
-            self?.overlay.updateAudioLevel(level)
-        }
-        recorder.startRecording()
-        NSSound(named: "Tink")?.play()
-        NSLog("Vox: Recording started")
-    }
-
-    private func stopAndProcess() {
-        recorder.onAudioLevel = nil
-
-        // Capture app context and translate mode NOW on the main thread,
-        // before dispatching to background.
-        let appContext = ContextService.shared.detect()
-        let contextHint = ContextService.shared.contextHint(for: appContext)
-        let isTranslate = translateMode
-
-        guard let audioURL = recorder.stopRecording() else {
-            state = .idle
-            updateStatusIcon()
-            return
-        }
-
-        // Check minimum recording length (~0.5s of 16kHz mono 16-bit = ~16KB)
-        let fileSize = (try? FileManager.default.attributesOfItem(atPath: audioURL.path)[.size] as? Int) ?? 0
-        if fileSize < 16000 {
-            NSLog("Vox: Recording too short (\(fileSize) bytes), ignoring")
-            state = .idle
-            updateStatusIcon()
-            try? FileManager.default.removeItem(at: audioURL)
-            return
-        }
-
-        // Check if any meaningful audio was captured (not just silence)
-        if !recorder.hasAudio {
-            NSLog("Vox: No audio detected (peak: \(recorder.peakPower) dB), skipping")
-            state = .idle
-            updateStatusIcon()
-            NSSound(named: "Basso")?.play()
-            AppDelegate.showNotification(title: "Vox", message: "No audio detected. Check your microphone.")
-            try? FileManager.default.removeItem(at: audioURL)
-            return
-        }
-
-        // Audio backup is now handled automatically by AudioService.stopRecording()
-
-        state = .processing
-        updateStatusIcon()
-        NSSound(named: "Pop")?.play()
-        NSLog("Vox: Recording stopped (\(fileSize) bytes, peak: \(recorder.peakPower) dB), processing...")
-
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            let log = LogService.shared
-
-            log.debug("Step 1: Transcribe start (file: \(audioURL.lastPathComponent))")
-            let rawText = STTService.shared.transcribe(audioFile: audioURL)
-            log.debug("Step 1: Transcribe result: [\(rawText)]")
-
-            guard !rawText.isEmpty else {
-                log.debug("Step 1: Empty result, aborting")
-                DispatchQueue.main.async {
-                    self?.state = .idle
-                    self?.updateStatusIcon()
-                    AppDelegate.showNotification(title: "Vox", message: "Could not recognize speech. Try again.")
-                }
-                try? FileManager.default.removeItem(at: audioURL)
-                return
-            }
-
-            log.debug("Step 2: PostProcessor start (context: \(contextHint ?? "none"), translate: \(isTranslate))")
-            let cleanText = LLMService.shared.process(rawText: rawText, contextHint: contextHint, translateMode: isTranslate)
-            let postProcessed = cleanText.isEmpty ? rawText : cleanText
-            log.debug("Step 2: PostProcessor result: [\(postProcessed)]")
-
-            let finalText: String
-            if LLMService.shared.isConfigured {
-                finalText = postProcessed
-                log.debug("Step 3: Skipped TextFormatter (LLM active)")
-            } else {
-                finalText = TextFormatter.format(postProcessed)
-                log.debug("Step 3: TextFormatter applied: [\(finalText)]")
-            }
-
-            log.debug("Step 4: Pasting...")
-            DispatchQueue.main.async {
-                PasteService.shared.paste(text: finalText)
-                log.debug("Step 4: Paste done")
-
-                // Save to history (translation mode: store both languages)
-                if isTranslate {
-                    HistoryService.shared.addRecord(text: finalText, originalText: rawText, isTranslation: true)
-                } else {
-                    HistoryService.shared.addRecord(text: finalText)
-                }
-
-                self?.state = .idle
-                self?.updateStatusIcon()
-                NSSound(named: "Glass")?.play()
-            }
-
-            try? FileManager.default.removeItem(at: audioURL)
-        }
-    }
-
     @objc private func quit() {
-        if state == .recording {
-            _ = recorder.stopRecording()
-        }
+        dictation.cancelIfRecording()
         NSApplication.shared.terminate(nil)
     }
 }
@@ -375,24 +242,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
 extension AppDelegate: HotkeyDelegate {
     func hotkeyPressed() {
-        switch hotkey.hotkeyMode {
-        case "hold":
-            if state == .idle {
-                if !config.configExists {
-                    AppDelegate.showNotification(title: "Vox", message: "Please configure your API keys first.")
-                    showSetup()
-                    return
-                }
-                startRecording()
-            }
-        default: // toggle
-            toggleRecording()
-        }
+        dictation.hotkeyPressed(mode: hotkey.hotkeyMode)
     }
 
     func hotkeyReleased() {
-        if hotkey.hotkeyMode == "hold" && state == .recording {
-            stopAndProcess()
-        }
+        dictation.hotkeyReleased(mode: hotkey.hotkeyMode)
     }
 }
