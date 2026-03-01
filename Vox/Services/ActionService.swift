@@ -68,7 +68,7 @@ final class ActionService {
         case .shortcut:
             return try await executeShortcut(action: action, params: match.params)
         case .vox:
-            return ActionResult(success: true, message: "Vox action '\(action.id)' dispatched")
+            return try await executeVox(action: action, params: match.params)
         }
     }
 
@@ -163,6 +163,39 @@ final class ActionService {
             return try executeKillProcess(params: params)
         default:
             throw VoxError.actionFailed("Unknown system action: \(action.id)")
+        }
+    }
+
+    private func executeVox(action: ActionDefinition, params: [String: String]) async throws -> ActionResult {
+        switch action.id {
+        case "translate":
+            let targetLang = params["targetLanguage"] ?? "English"
+            let prompt = "翻译以下文字到\(targetLang)。只输出翻译结果，不要任何解释。"
+            let text = params["text"] ?? ""
+            guard !text.isEmpty else {
+                return ActionResult(success: true, message: "Translate: awaiting text")
+            }
+            let result = await LLMService.shared.process(rawText: text, customSystemPrompt: prompt)
+            if !result.isEmpty && result != text {
+                PasteService.shared.paste(text: result)
+                return ActionResult(success: true, message: "Translated to \(targetLang)")
+            }
+            return ActionResult(success: false, message: "Translation failed")
+
+        case "text_modify":
+            // text_modify is handled by DictationCoordinator's editWindow, not here
+            return ActionResult(success: true, message: "Text modify: use edit window")
+
+        case "selection_modify":
+            // selection_modify is handled by LauncherCoordinator, not here
+            return ActionResult(success: true, message: "Selection modify: dispatched")
+
+        case "clipboard_history":
+            // Signal to show clipboard panel — handled by LauncherCoordinator
+            return ActionResult(success: true, message: "clipboard_show")
+
+        default:
+            throw VoxError.actionFailed("Unknown vox action: \(action.id)")
         }
     }
 
