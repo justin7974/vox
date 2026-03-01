@@ -53,14 +53,13 @@ class AudioService {
     }
 
     @discardableResult
-    func stopRecording() -> URL? {
+    func stopRecording(backup: Bool = true) -> URL? {
         meteringTimer?.invalidate()
         meteringTimer = nil
         audioRecorder?.stop()
         audioRecorder = nil
         let url = currentURL
-        // Auto-backup on stop
-        if let url = url {
+        if backup, let url = url {
             saveBackup(audioURL: url)
         }
         return url

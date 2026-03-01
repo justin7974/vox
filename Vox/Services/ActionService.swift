@@ -1,5 +1,6 @@
 import Foundation
 import Cocoa
+import UserNotifications
 
 final class ActionService {
     static let shared = ActionService()
@@ -540,7 +541,7 @@ final class ActionService {
 
         let process = Process()
         process.executableURL = URL(fileURLWithPath: "/usr/bin/mdfind")
-        process.arguments = ["-name", query, "-onlyin", NSHomeDirectory()]
+        process.arguments = ["-name", query]
 
         let pipe = Pipe()
         process.standardOutput = pipe
@@ -577,21 +578,26 @@ final class ActionService {
     // MARK: - Timer
 
     private func executeTimer(params: [String: String]) throws -> ActionResult {
-        guard let secondsStr = params["seconds"], let seconds = Int(secondsStr), seconds > 0 else {
+        guard let secondsStr = params["seconds"],
+              let seconds = Int(Double(secondsStr) ?? 0),
+              seconds > 0 else {
             throw VoxError.actionFailed("Invalid timer duration")
         }
 
         let label = params["label"] ?? "Vox 计时器"
         let duration = formatDuration(seconds)
 
-        // Use DispatchQueue delayed execution + AppleScript notification
-        DispatchQueue.main.asyncAfter(deadline: .now() + .seconds(seconds)) {
-            let script = """
-            display notification "\(duration) 到了" with title "\(label)" sound name "Glass"
-            """
-            if let appleScript = NSAppleScript(source: script) {
-                var error: NSDictionary?
-                appleScript.executeAndReturnError(&error)
+        // Schedule via UNUserNotificationCenter — reliable even when app is in background
+        let content = UNMutableNotificationContent()
+        content.title = label
+        content.body = "\(duration) 到了"
+        content.sound = .default
+
+        let trigger = UNTimeIntervalNotificationTrigger(timeInterval: TimeInterval(seconds), repeats: false)
+        let request = UNNotificationRequest(identifier: "vox-timer-\(UUID().uuidString)", content: content, trigger: trigger)
+        UNUserNotificationCenter.current().add(request) { error in
+            if let error = error {
+                self.log.error("Timer notification scheduling failed: \(error.localizedDescription)")
             }
         }
 

@@ -60,7 +60,7 @@ class LauncherCoordinator: ClipboardPanelDelegate {
             return
         }
 
-        guard let audioURL = audio.stopRecording() else {
+        guard let audioURL = audio.stopRecording(backup: false) else {
             sm.transition(to: .idle)
             panel.hide()
             return

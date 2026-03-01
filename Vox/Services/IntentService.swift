@@ -150,6 +150,7 @@ final class IntentService {
         ### quick_answer（重要）
         对于简单查询（计算、换算、查词、时区、简单事实），用 quick_answer 直接回答。
         answer 参数中直接给出简洁答案（1-2句话）。
+        时区查询：根据上面给出的当前北京时间，计算出目标城市的实际时间并直接回答（如"纽约现在是 14:30"）。
         如果问题太复杂无法简短回答（需要长篇讨论、实时数据、主观判断），返回 action_id: "none"。
 
         ### timer
@@ -187,7 +188,7 @@ final class IntentService {
         "搜索文件readme" → {"action_id":"file_search","params":{"query":"readme"},"confidence":0.9}
         "128乘以15" → {"action_id":"quick_answer","params":{"answer":"1,920"},"confidence":0.95}
         "100美元多少人民币" → {"action_id":"quick_answer","params":{"answer":"约 726 人民币（汇率 7.26）"},"confidence":0.9}
-        "纽约现在几点" → {"action_id":"quick_answer","params":{"answer":"纽约比北京慢 13 小时（东部标准时间 UTC-5）"},"confidence":0.9}
+        "纽约现在几点" → {"action_id":"quick_answer","params":{"answer":"纽约现在是 14:30（根据当前北京时间换算，UTC-5）"},"confidence":0.95}
         "serendipity什么意思" → {"action_id":"quick_answer","params":{"answer":"意外发现有价值事物的能力或运气，中文可译为「机缘巧合」"},"confidence":0.95}
         "5公里等于多少英里" → {"action_id":"quick_answer","params":{"answer":"约 3.1 英里"},"confidence":0.95}
         "5分钟计时器" → {"action_id":"timer","params":{"seconds":"300","label":"5分钟计时器"},"confidence":0.95}
@@ -201,8 +202,16 @@ final class IntentService {
         {"action_id":"xxx","params":{...},"confidence":0.9}
         """
 
+        // Inject current time so LLM can answer time/timezone queries
+        let now = Date()
+        let bjFormatter = DateFormatter()
+        bjFormatter.dateFormat = "yyyy-MM-dd HH:mm"
+        bjFormatter.timeZone = TimeZone(identifier: "Asia/Shanghai")
+        let bjTime = bjFormatter.string(from: now)
+        prompt += "\n\n当前北京时间：\(bjTime)"
+
         if let ctx = context {
-            prompt += "\n\n当前上下文：用户正在 \(ctx.appName)。"
+            prompt += "\n当前上下文：用户正在 \(ctx.appName)。"
             if let url = ctx.url {
                 prompt += " 网页: \(url)"
             }
