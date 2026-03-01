@@ -178,7 +178,7 @@ class BlackBoxWindowController: NSObject, NSWindowDelegate, NSTableViewDataSourc
             let finalText = cleanText.isEmpty ? rawText : cleanText
 
             DispatchQueue.main.async {
-                PasteHelper.paste(text: finalText)
+                PasteService.shared.paste(text: finalText)
 
                 // Save to history
                 if isTranslate {

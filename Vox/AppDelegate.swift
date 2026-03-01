@@ -424,7 +424,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
             log.debug("Step 4: Pasting...")
             DispatchQueue.main.async {
-                PasteHelper.paste(text: finalText)
+                PasteService.shared.paste(text: finalText)
                 log.debug("Step 4: Paste done")
 
                 // Save to history (translation mode: store both languages)

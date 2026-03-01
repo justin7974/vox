@@ -1,9 +1,11 @@
 import Cocoa
 
-enum PasteHelper {
-    private static let log = LogService.shared
+class PasteService {
+    static let shared = PasteService()
 
-    static func paste(text: String) {
+    private let log = LogService.shared
+
+    func paste(text: String) {
         log.debug("paste called, length=\(text.count)")
 
         // Always use clipboard + Cmd+V — most universal method
@@ -12,9 +14,9 @@ enum PasteHelper {
         pasteViaClipboard(text: text)
     }
 
-    // MARK: - Method 1: Direct AXValue injection
+    // MARK: - Direct AXValue injection (unused, kept for reference)
 
-    private static func insertViaAccessibility(text: String) -> Bool {
+    private func insertViaAccessibility(text: String) -> Bool {
         guard let app = NSWorkspace.shared.frontmostApplication else {
             log.debug("AX: no frontmost app")
             return false
@@ -65,12 +67,11 @@ enum PasteHelper {
 
     // MARK: - Clipboard + Cmd+V via CGEvent
 
-    private static func pasteViaClipboard(text: String) {
+    private func pasteViaClipboard(text: String) {
         let pasteboard = NSPasteboard.general
         pasteboard.clearContents()
         pasteboard.setString(text, forType: .string)
 
-        // CGEvent Cmd+V (needs Accessibility permission)
         usleep(50_000)
         let source = CGEventSource(stateID: .hidSystemState)
         if let keyDown = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: true) {
