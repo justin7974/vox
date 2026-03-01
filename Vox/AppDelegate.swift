@@ -352,8 +352,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Capture app context and translate mode NOW on the main thread,
         // before dispatching to background.
-        let appContext = ContextDetector.detect()
-        let contextHint = ContextDetector.contextHint(for: appContext)
+        let appContext = ContextService.shared.detect()
+        let contextHint = ContextService.shared.contextHint(for: appContext)
         let isTranslate = translateMode
 
         guard let audioURL = recorder.stopRecording() else {

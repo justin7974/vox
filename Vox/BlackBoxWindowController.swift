@@ -157,8 +157,8 @@ class BlackBoxWindowController: NSObject, NSWindowDelegate, NSTableViewDataSourc
         sender.isEnabled = false
 
         DispatchQueue.global(qos: .userInitiated).async {
-            let appContext = ContextDetector.detect()
-            let contextHint = ContextDetector.contextHint(for: appContext)
+            let appContext = ContextService.shared.detect()
+            let contextHint = ContextService.shared.contextHint(for: appContext)
             let isTranslate = AppDelegate.shared.translateMode
 
             NSLog("Vox: Black Box reprocessing \(backup.url.lastPathComponent)")
