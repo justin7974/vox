@@ -22,6 +22,12 @@ if [ -f "$SCRIPT_DIR/AppIcon.icns" ]; then
     cp "$SCRIPT_DIR/AppIcon.icns" "$APP_DIR/Contents/Resources/"
 fi
 
+# Copy built-in Action definitions
+if [ -d "$SCRIPT_DIR/Vox/Resources/Actions" ]; then
+    mkdir -p "$APP_DIR/Contents/Resources/Actions"
+    cp "$SCRIPT_DIR/Vox/Resources/Actions/"*.md "$APP_DIR/Contents/Resources/Actions/"
+fi
+
 # Compile Swift files (including subdirectories)
 SWIFT_FILES=$(find "$SCRIPT_DIR/Vox" -name "*.swift" -type f)
 swiftc -O \
