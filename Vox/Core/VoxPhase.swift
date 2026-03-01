@@ -41,7 +41,6 @@ enum VoxPhase: Equatable {
     }
 }
 
-@MainActor
 class VoxStateMachine {
     private(set) var phase: VoxPhase = .idle
 
@@ -60,7 +59,9 @@ class VoxStateMachine {
 
         switch (from, to) {
         case (.idle, .recording):                       return true
+        case (.recording, .idle):                       return true
         case (.recording(.dictation), .transcribing):   return true
+        case (.transcribing, .idle):                    return true
         case (.transcribing, .postProcessing):          return true
         case (.postProcessing, .pasting):               return true
         case (.pasting, .idle):                         return true

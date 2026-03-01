@@ -11,7 +11,7 @@ class DictationCoordinator {
     private let history = HistoryService.shared
     private let overlay = StatusOverlay()
 
-    private(set) var state: AppState = .idle
+    private let sm = VoxStateMachine()
 
     /// Called when setup wizard needs to be shown (no config)
     var onNeedsSetup: (() -> Void)?
@@ -21,7 +21,7 @@ class DictationCoordinator {
     func hotkeyPressed(mode: String) {
         switch mode {
         case "hold":
-            if state == .idle {
+            if sm.phase == .idle {
                 guard config.configExists else {
                     AppDelegate.showNotification(title: "Vox", message: "Please configure your API keys first.")
                     onNeedsSetup?()
@@ -35,13 +35,13 @@ class DictationCoordinator {
     }
 
     func hotkeyReleased(mode: String) {
-        if mode == "hold" && state == .recording {
+        if mode == "hold", case .recording = sm.phase {
             stopAndProcess()
         }
     }
 
     func cancelIfRecording() {
-        if state == .recording {
+        if case .recording = sm.phase {
             _ = audio.stopRecording()
         }
     }
@@ -49,7 +49,7 @@ class DictationCoordinator {
     // MARK: - Recording
 
     private func toggleRecording() {
-        switch state {
+        switch sm.phase {
         case .idle:
             guard config.configExists else {
                 AppDelegate.showNotification(title: "Vox", message: "Please configure your API keys first.")
@@ -59,14 +59,14 @@ class DictationCoordinator {
             startRecording()
         case .recording:
             stopAndProcess()
-        case .processing:
+        default:
             break
         }
     }
 
     private func startRecording() {
-        state = .recording
-        overlay.show(state: state)
+        sm.transition(to: .recording(.dictation))
+        overlay.show(phase: sm.phase)
         audio.onAudioLevel = { [weak self] level in
             self?.overlay.updateAudioLevel(level)
         }
@@ -84,32 +84,32 @@ class DictationCoordinator {
         let isTranslate = AppDelegate.shared.translateMode
 
         guard let audioURL = audio.stopRecording() else {
-            state = .idle
-            overlay.show(state: state)
+            sm.transition(to: .idle)
+            overlay.show(phase: sm.phase)
             return
         }
 
         let fileSize = (try? FileManager.default.attributesOfItem(atPath: audioURL.path)[.size] as? Int) ?? 0
         if fileSize < 16000 {
             NSLog("Vox: Recording too short (\(fileSize) bytes), ignoring")
-            state = .idle
-            overlay.show(state: state)
+            sm.transition(to: .idle)
+            overlay.show(phase: sm.phase)
             try? FileManager.default.removeItem(at: audioURL)
             return
         }
 
         if !audio.hasAudio {
             NSLog("Vox: No audio detected (peak: \(audio.peakPower) dB), skipping")
-            state = .idle
-            overlay.show(state: state)
+            sm.transition(to: .idle)
+            overlay.show(phase: sm.phase)
             NSSound(named: "Basso")?.play()
             AppDelegate.showNotification(title: "Vox", message: "No audio detected. Check your microphone.")
             try? FileManager.default.removeItem(at: audioURL)
             return
         }
 
-        state = .processing
-        overlay.show(state: state)
+        sm.transition(to: .transcribing)
+        overlay.show(phase: sm.phase)
         NSSound(named: "Pop")?.play()
         NSLog("Vox: Recording stopped (\(fileSize) bytes, peak: \(audio.peakPower) dB), processing...")
 
@@ -123,12 +123,16 @@ class DictationCoordinator {
             guard !rawText.isEmpty else {
                 self.log.debug("Step 1: Empty result, aborting")
                 await MainActor.run {
-                    self.state = .idle
-                    self.overlay.show(state: self.state)
+                    self.sm.transition(to: .idle)
+                    self.overlay.show(phase: self.sm.phase)
                     AppDelegate.showNotification(title: "Vox", message: "Could not recognize speech. Try again.")
                 }
                 try? FileManager.default.removeItem(at: audioURL)
                 return
+            }
+
+            await MainActor.run {
+                self.sm.transition(to: .postProcessing)
             }
 
             self.log.debug("Step 2: LLM start (context: \(contextHint ?? "none"), translate: \(isTranslate))")
@@ -147,6 +151,7 @@ class DictationCoordinator {
 
             self.log.debug("Step 4: Pasting...")
             await MainActor.run {
+                self.sm.transition(to: .pasting)
                 self.paste.paste(text: finalText)
                 self.log.debug("Step 4: Paste done")
 
@@ -156,8 +161,8 @@ class DictationCoordinator {
                     self.history.addRecord(text: finalText)
                 }
 
-                self.state = .idle
-                self.overlay.show(state: self.state)
+                self.sm.transition(to: .idle)
+                self.overlay.show(phase: self.sm.phase)
                 NSSound(named: "Glass")?.play()
             }
 

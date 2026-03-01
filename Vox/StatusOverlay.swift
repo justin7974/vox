@@ -7,8 +7,8 @@ class StatusOverlay {
     private var window: NSWindow?
     private var contentView: OverlayContentView?
 
-    func show(state: AppState) {
-        if state == .idle {
+    func show(phase: VoxPhase) {
+        if phase == .idle {
             hide()
             return
         }
@@ -19,12 +19,12 @@ class StatusOverlay {
 
         guard let contentView = contentView, let window = window else { return }
 
-        switch state {
+        switch phase {
         case .recording:
             contentView.showRecording(text: "正在聆听…")
-        case .processing:
+        case .transcribing, .postProcessing, .pasting:
             contentView.showProcessing(text: "奋笔疾书…")
-        case .idle:
+        default:
             break
         }
 

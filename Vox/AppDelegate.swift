@@ -1,12 +1,6 @@
 import Cocoa
 import UserNotifications
 
-enum AppState {
-    case idle
-    case recording
-    case processing
-}
-
 class AppDelegate: NSObject, NSApplicationDelegate {
     static var shared: AppDelegate!
 
