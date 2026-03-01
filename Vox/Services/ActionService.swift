@@ -125,6 +125,15 @@ final class ActionService {
                 "baidu": "https://www.baidu.com/s?wd={query}",
                 "bilibili": "https://search.bilibili.com/all?keyword={query}",
                 "google": "https://www.google.com/search?q={query}",
+                "zhihu": "https://www.zhihu.com/search?type=content&q={query}",
+                "xiaohongshu": "https://www.xiaohongshu.com/search_result?keyword={query}",
+                "taobao": "https://s.taobao.com/search?q={query}",
+                "jd": "https://search.jd.com/Search?keyword={query}",
+                "amazon": "https://www.amazon.com/s?k={query}",
+                "reddit": "https://www.reddit.com/search/?q={query}",
+                "stackoverflow": "https://stackoverflow.com/search?q={query}",
+                "twitter": "https://x.com/search?q={query}",
+                "wikipedia": "https://en.wikipedia.org/w/index.php?search={query}",
             ]
             template = engineTemplates[engine] ?? template
         }
@@ -311,6 +320,12 @@ final class ActionService {
             return try executeWindowManage(params: params)
         case "kill_process":
             return try executeKillProcess(params: params)
+        case "open_folder":
+            return try executeOpenFolder(params: params)
+        case "file_search":
+            return try executeFileSearch(params: params)
+        case "timer":
+            return try executeTimer(params: params)
         default:
             throw VoxError.actionFailed("Unknown system action: \(action.id)")
         }
@@ -318,19 +333,13 @@ final class ActionService {
 
     private func executeVox(action: ActionDefinition, params: [String: String]) async throws -> ActionResult {
         switch action.id {
-        case "translate":
-            let targetLang = params["targetLanguage"] ?? "English"
-            let prompt = "翻译以下文字到\(targetLang)。只输出翻译结果，不要任何解释。"
-            let text = params["text"] ?? ""
-            guard !text.isEmpty else {
-                return ActionResult(success: true, message: "Translate: awaiting text")
+        case "quick_answer":
+            let answer = params["answer"] ?? ""
+            guard !answer.isEmpty else {
+                return ActionResult(success: false, message: "无法回答")
             }
-            let result = await LLMService.shared.process(rawText: text, customSystemPrompt: prompt)
-            if !result.isEmpty && result != text {
-                PasteService.shared.paste(text: result)
-                return ActionResult(success: true, message: "Translated to \(targetLang)")
-            }
-            return ActionResult(success: false, message: "Translation failed")
+            // Return answer with special prefix so LauncherCoordinator shows it in the panel
+            return ActionResult(success: true, message: "quick_answer:\(answer)")
 
         case "text_modify":
             // text_modify is handled by DictationCoordinator's editWindow, not here
@@ -488,6 +497,129 @@ final class ActionService {
         throw VoxError.actionFailed("App not running: \(appName)")
     }
 
+    // MARK: - Open Folder
+
+    private static let folderMappings: [String: String] = [
+        "desktop": "~/Desktop", "桌面": "~/Desktop",
+        "downloads": "~/Downloads", "下载": "~/Downloads",
+        "documents": "~/Documents", "文档": "~/Documents",
+        "home": "~", "主目录": "~",
+        "applications": "/Applications", "应用": "/Applications",
+        "pictures": "~/Pictures", "图片": "~/Pictures",
+        "music": "~/Music", "音乐": "~/Music",
+        "movies": "~/Movies", "视频": "~/Movies",
+        "trash": "~/.Trash", "废纸篓": "~/.Trash",
+        "icloud": "~/Library/Mobile Documents/com~apple~CloudDocs",
+        "dropbox": "~/Library/CloudStorage/Dropbox",
+    ]
+
+    private func executeOpenFolder(params: [String: String]) throws -> ActionResult {
+        guard let folder = params["folder"], !folder.isEmpty else {
+            throw VoxError.actionFailed("Missing folder name")
+        }
+
+        let lower = folder.lowercased()
+        let pathTemplate = ActionService.folderMappings[lower] ?? folder
+        let path = NSString(string: pathTemplate).expandingTildeInPath
+
+        guard FileManager.default.fileExists(atPath: path) else {
+            throw VoxError.actionFailed("文件夹不存在: \(folder)")
+        }
+
+        NSWorkspace.shared.open(URL(fileURLWithPath: path))
+        let displayName = (path as NSString).lastPathComponent
+        return ActionResult(success: true, message: "打开了 \(displayName)")
+    }
+
+    // MARK: - File Search
+
+    private func executeFileSearch(params: [String: String]) throws -> ActionResult {
+        guard let query = params["query"], !query.isEmpty else {
+            throw VoxError.actionFailed("Missing search query")
+        }
+
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/bin/mdfind")
+        process.arguments = ["-name", query, "-onlyin", NSHomeDirectory()]
+
+        let pipe = Pipe()
+        process.standardOutput = pipe
+        process.standardError = FileHandle.nullDevice
+
+        do {
+            try process.run()
+            process.waitUntilExit()
+        } catch {
+            throw VoxError.actionFailed("搜索失败: \(error.localizedDescription)")
+        }
+
+        let data = pipe.fileHandleForReading.readDataToEndOfFile()
+        let output = String(data: data, encoding: .utf8) ?? ""
+        let files = output.components(separatedBy: "\n").filter { !$0.isEmpty }
+
+        guard !files.isEmpty else {
+            return ActionResult(success: false, message: "未找到: \(query)")
+        }
+
+        // Reveal the first result in Finder
+        let firstFile = URL(fileURLWithPath: files[0])
+        NSWorkspace.shared.activateFileViewerSelecting([firstFile])
+
+        let count = files.count
+        let name = (files[0] as NSString).lastPathComponent
+        if count == 1 {
+            return ActionResult(success: true, message: "找到: \(name)")
+        } else {
+            return ActionResult(success: true, message: "找到 \(count) 个结果，显示: \(name)")
+        }
+    }
+
+    // MARK: - Timer
+
+    private func executeTimer(params: [String: String]) throws -> ActionResult {
+        guard let secondsStr = params["seconds"], let seconds = Int(secondsStr), seconds > 0 else {
+            throw VoxError.actionFailed("Invalid timer duration")
+        }
+
+        let label = params["label"] ?? "Vox 计时器"
+        let duration = formatDuration(seconds)
+
+        // Use DispatchQueue delayed execution + AppleScript notification
+        DispatchQueue.main.asyncAfter(deadline: .now() + .seconds(seconds)) {
+            let script = """
+            display notification "\(duration) 到了" with title "\(label)" sound name "Glass"
+            """
+            if let appleScript = NSAppleScript(source: script) {
+                var error: NSDictionary?
+                appleScript.executeAndReturnError(&error)
+            }
+        }
+
+        return ActionResult(success: true, message: "计时 \(duration)")
+    }
+
+    private func formatDuration(_ seconds: Int) -> String {
+        if seconds >= 3600 {
+            let h = seconds / 3600
+            let m = (seconds % 3600) / 60
+            return m > 0 ? "\(h)小时\(m)分钟" : "\(h)小时"
+        } else if seconds >= 60 {
+            let m = seconds / 60
+            let s = seconds % 60
+            return s > 0 ? "\(m)分\(s)秒" : "\(m)分钟"
+        } else {
+            return "\(seconds)秒"
+        }
+    }
+
+    // MARK: - Spotlight Fallback
+
+    /// Open Spotlight search. Called when no action matches and user wants to fall back.
+    func openSpotlight() {
+        let script = "tell application \"System Events\" to keystroke \" \" using command down"
+        runAppleScript(script)
+    }
+
     // MARK: - Helpers
 
     private func runAppleScript(_ script: String) {
@@ -510,12 +642,6 @@ final class ActionService {
     private func copyBuiltinActionsIfNeeded() {
         let fm = FileManager.default
 
-        // Check if actions already exist
-        if let existing = try? fm.contentsOfDirectory(atPath: actionsDir),
-           existing.contains(where: { $0.hasSuffix(".md") }) {
-            return  // Already have actions, don't overwrite user modifications
-        }
-
         // Copy from app bundle Resources/Actions/
         guard let bundlePath = Bundle.main.resourcePath else {
             log.warning("ActionService: No bundle resource path")
@@ -530,14 +656,18 @@ final class ActionService {
 
         guard let files = try? fm.contentsOfDirectory(atPath: bundleActionsDir) else { return }
 
+        // Copy each builtin action that doesn't exist in user dir yet.
+        // Existing user-modified actions are never overwritten.
         for file in files where file.hasSuffix(".md") {
             let src = (bundleActionsDir as NSString).appendingPathComponent(file)
             let dst = (actionsDir as NSString).appendingPathComponent(file)
-            do {
-                try fm.copyItem(atPath: src, toPath: dst)
-                log.debug("ActionService: Copied built-in action: \(file)")
-            } catch {
-                log.warning("ActionService: Failed to copy \(file): \(error.localizedDescription)")
+            if !fm.fileExists(atPath: dst) {
+                do {
+                    try fm.copyItem(atPath: src, toPath: dst)
+                    log.info("ActionService: Copied new built-in action: \(file)")
+                } catch {
+                    log.warning("ActionService: Failed to copy \(file): \(error.localizedDescription)")
+                }
             }
         }
     }

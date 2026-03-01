@@ -103,12 +103,27 @@ final class IntentService {
         appName 必须是已安装列表中的真实应用名（区分大小写）。
         中文别名：浏览器→Safari、终端→Terminal、备忘录→Notes、微信→WeChat、设置→System Settings、邮件→Mail、日历→Calendar、计算器→Calculator、文件管理器→Finder
 
-        ### web_search
+        ### web_search vs open_url
+        区分"搜索"和"打开网站"：
+        - "在YouTube搜索xxx" → web_search（有搜索意图）
+        - "打开YouTube" → open_url（只想打开网站）
+        - "搜索xxx" → web_search
+        - "打开GitHub" → open_url
+
         引擎检测：
         - YouTube/油管/看视频 → engine: "youtube"
         - B站/bilibili/哔哩哔哩 → engine: "bilibili"
         - GitHub → engine: "github"
         - 百度 → engine: "baidu"
+        - 知乎 → engine: "zhihu"
+        - 小红书 → engine: "xiaohongshu"
+        - 淘宝 → engine: "taobao"
+        - 京东 → engine: "jd"
+        - Amazon/亚马逊 → engine: "amazon"
+        - Reddit → engine: "reddit"
+        - StackOverflow → engine: "stackoverflow"
+        - Twitter/X → engine: "twitter"
+        - Wikipedia/维基百科 → engine: "wikipedia"
         - 未指定 → 不传 engine（默认 Google）
 
         **query 必须是优化后的搜索关键词**，不是用户原话。你要像搜索引擎助手一样重构 query：
@@ -122,6 +137,23 @@ final class IntentService {
         - "搜索macOS Sequoia有什么新功能" → query: "macOS Sequoia new features"
         - "百度一下附近有什么好吃的" → query: "附近美食推荐", engine: "baidu"
         - "在B站找一下原神攻略" → query: "原神攻略", engine: "bilibili"
+
+        ### open_url
+        url 参数必须是完整 URL（含 https://）。常见映射参见 action 描述。
+
+        ### open_folder
+        folder 参数使用关键词：desktop, downloads, documents, home, applications, pictures, music, movies, trash, icloud, dropbox。
+
+        ### file_search
+        query 是文件名或关键词，去掉口语修饰。
+
+        ### quick_answer（重要）
+        对于简单查询（计算、换算、查词、时区、简单事实），用 quick_answer 直接回答。
+        answer 参数中直接给出简洁答案（1-2句话）。
+        如果问题太复杂无法简短回答（需要长篇讨论、实时数据、主观判断），返回 action_id: "none"。
+
+        ### timer
+        seconds 参数是秒数整数。"5分钟" → 300，"一个半小时" → 5400。
 
         ### 其他参数
         - volume_control 的 action：mute / unmute / up / down / set（set 时需 level 0-100）
@@ -139,14 +171,29 @@ final class IntentService {
         "用YouTube搜索詹姆斯最新的视频" → {"action_id":"web_search","params":{"query":"LeBron James latest highlights","engine":"youtube"},"confidence":0.95}
         "帮我在油管搜一下怎么做蛋糕" → {"action_id":"web_search","params":{"query":"how to bake a cake tutorial","engine":"youtube"},"confidence":0.95}
         "搜索Swift并发编程" → {"action_id":"web_search","params":{"query":"Swift concurrency programming"},"confidence":0.95}
+        "在淘宝搜无线键盘" → {"action_id":"web_search","params":{"query":"无线键盘","engine":"taobao"},"confidence":0.95}
+        "在知乎找一下怎么学编程" → {"action_id":"web_search","params":{"query":"编程入门","engine":"zhihu"},"confidence":0.95}
         "声音小一点" → {"action_id":"volume_control","params":{"action":"down"},"confidence":0.95}
         "窗口放左边" → {"action_id":"window_manage","params":{"position":"left"},"confidence":0.9}
         "静音" → {"action_id":"volume_control","params":{"action":"mute"},"confidence":0.95}
         "锁屏" → {"action_id":"lock_screen","params":{},"confidence":0.95}
         "关掉Safari" → {"action_id":"kill_process","params":{"appName":"Safari"},"confidence":0.95}
         "剪贴板" → {"action_id":"clipboard_history","params":{},"confidence":0.95}
-        "翻译成英文" → {"action_id":"translate","params":{"targetLanguage":"English"},"confidence":0.95}
+        "打开GitHub" → {"action_id":"open_url","params":{"url":"https://github.com"},"confidence":0.95}
+        "打开Gmail" → {"action_id":"open_url","params":{"url":"https://mail.google.com"},"confidence":0.95}
+        "打开下载文件夹" → {"action_id":"open_folder","params":{"folder":"downloads"},"confidence":0.95}
+        "打开桌面" → {"action_id":"open_folder","params":{"folder":"desktop"},"confidence":0.95}
+        "找一下我的合同文件" → {"action_id":"file_search","params":{"query":"合同"},"confidence":0.9}
+        "搜索文件readme" → {"action_id":"file_search","params":{"query":"readme"},"confidence":0.9}
+        "128乘以15" → {"action_id":"quick_answer","params":{"answer":"1,920"},"confidence":0.95}
+        "100美元多少人民币" → {"action_id":"quick_answer","params":{"answer":"约 726 人民币（汇率 7.26）"},"confidence":0.9}
+        "纽约现在几点" → {"action_id":"quick_answer","params":{"answer":"纽约比北京慢 13 小时（东部标准时间 UTC-5）"},"confidence":0.9}
+        "serendipity什么意思" → {"action_id":"quick_answer","params":{"answer":"意外发现有价值事物的能力或运气，中文可译为「机缘巧合」"},"confidence":0.95}
+        "5公里等于多少英里" → {"action_id":"quick_answer","params":{"answer":"约 3.1 英里"},"confidence":0.95}
+        "5分钟计时器" → {"action_id":"timer","params":{"seconds":"300","label":"5分钟计时器"},"confidence":0.95}
+        "倒计时10分钟" → {"action_id":"timer","params":{"seconds":"600"},"confidence":0.95}
         "今天天气怎么样" → {"action_id":"none","params":{},"confidence":0.0}
+        "帮我写一篇文章" → {"action_id":"none","params":{},"confidence":0.0}
 
         ## 输出
 

@@ -21,6 +21,10 @@ class LauncherCoordinator: ClipboardPanelDelegate {
     private var isSelectionEditMode = false
     private var selectedText: String?
 
+    /// Tracks the last unmatched text for Spotlight fallback
+    private var noMatchText: String?
+    private var noMatchKeyMonitor: Any?
+
     init() {
         clipboardPanel.delegate = self
     }
@@ -136,6 +140,22 @@ class LauncherCoordinator: ClipboardPanelDelegate {
                         return
                     }
 
+                    // Special: quick_answer shows the answer in the panel
+                    if result.message.hasPrefix("quick_answer:") {
+                        let answer = String(result.message.dropFirst("quick_answer:".count))
+                        await MainActor.run {
+                            self.sm.transition(to: .showingResult)
+                            self.panel.showQuickAnswer(answer: answer)
+                        }
+                        try? await Task.sleep(for: .seconds(4.0))
+                        await MainActor.run {
+                            self.panel.hide()
+                            self.sm.transition(to: .idle)
+                        }
+                        try? FileManager.default.removeItem(at: audioURL)
+                        return
+                    }
+
                     await MainActor.run {
                         self.sm.transition(to: .showingResult)
                         self.panel.showResult(result)
@@ -149,11 +169,15 @@ class LauncherCoordinator: ClipboardPanelDelegate {
                     try? await Task.sleep(for: .seconds(2.0))
                 }
             } else {
-                // No match
+                // No match — show with Spotlight fallback option
                 await MainActor.run {
                     self.panel.showNoMatch(originalText: rawText)
+                    self.installSpotlightFallback(query: rawText)
                 }
-                try? await Task.sleep(for: .seconds(2.0))
+                try? await Task.sleep(for: .seconds(3.0))
+                await MainActor.run {
+                    self.removeSpotlightFallback()
+                }
             }
 
             // Cleanup
@@ -292,6 +316,37 @@ class LauncherCoordinator: ClipboardPanelDelegate {
         }
 
         return text.isEmpty ? nil : text
+    }
+
+    // MARK: - Spotlight Fallback
+
+    private func installSpotlightFallback(query: String) {
+        noMatchText = query
+        noMatchKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self = self, self.noMatchText != nil else { return event }
+            if event.keyCode == 36 { // Enter key
+                self.panel.hide()
+                self.sm.transition(to: .idle)
+                self.removeSpotlightFallback()
+                self.actionService.openSpotlight()
+                return nil
+            }
+            if event.keyCode == 53 { // Esc key
+                self.panel.hide()
+                self.sm.transition(to: .idle)
+                self.removeSpotlightFallback()
+                return nil
+            }
+            return event
+        }
+    }
+
+    private func removeSpotlightFallback() {
+        noMatchText = nil
+        if let monitor = noMatchKeyMonitor {
+            NSEvent.removeMonitor(monitor)
+            noMatchKeyMonitor = nil
+        }
     }
 
     // MARK: - ClipboardPanelDelegate

@@ -26,6 +26,7 @@ class LauncherPanel {
     private static let terracotta = NSColor(red: 0xd4/255, green: 0x71/255, blue: 0x6a/255, alpha: 1.0)
     private static let fern = NSColor(red: 0x5f/255, green: 0xbc/255, blue: 0x82/255, alpha: 1.0)
     private static let amber = NSColor(red: 0xd4/255, green: 0xa0/255, blue: 0x4e/255, alpha: 1.0)
+    private static let slateBlue = NSColor(red: 0x5a/255, green: 0x98/255, blue: 0xd0/255, alpha: 1.0)
 
     // MARK: - Public API
 
@@ -114,6 +115,24 @@ class LauncherPanel {
         panel?.resizeTo(height: 80)
     }
 
+    func showQuickAnswer(answer: String) {
+        ensurePanel()
+        resetContent()
+
+        actionIcon?.stringValue = "●"
+        actionIcon?.textColor = LauncherPanel.slateBlue
+        actionIcon?.isHidden = false
+        actionLabel?.stringValue = answer
+        actionLabel?.textColor = .labelColor
+        actionLabel?.lineBreakMode = .byWordWrapping
+        actionLabel?.maximumNumberOfLines = 4
+        actionLabel?.isHidden = false
+
+        let lineCount = min(4, max(1, answer.count / 30 + 1))
+        let height = CGFloat(60 + lineCount * 20)
+        panel?.resizeTo(height: min(height, LauncherPanel.maxHeight))
+    }
+
     func showNoMatch(originalText: String) {
         ensurePanel()
         resetContent()
@@ -128,7 +147,7 @@ class LauncherPanel {
         actionLabel?.textColor = LauncherPanel.amber
         actionLabel?.isHidden = false
 
-        detailLabel?.stringValue = "再试一次：按住快捷键重新说"
+        detailLabel?.stringValue = "Enter → Spotlight 搜索 | 按住热键重试"
         detailLabel?.textColor = .tertiaryLabelColor
         detailLabel?.isHidden = false
 
