@@ -27,6 +27,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         hotkey.delegate = self
         hotkey.register()
 
+        // On version change, reset stale TCC entry so macOS re-prompts correctly
+        resetAccessibilityIfVersionChanged()
+
         // Check accessibility for auto-paste (Cmd+V simulation)
         let key = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
         let options = [key: true] as CFDictionary
@@ -42,6 +45,37 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if !config.configExists {
             showSetup()
         }
+    }
+
+    // MARK: - TCC Permission Fix
+
+    /// When the app binary changes (e.g. version update), macOS TCC may retain a stale
+    /// accessibility entry that looks "granted" but doesn't actually work for CGEvent posting.
+    /// This detects version changes and proactively clears the stale entry so macOS will
+    /// re-prompt the user — much better UX than silently failing.
+    private func resetAccessibilityIfVersionChanged() {
+        let voxDir = NSHomeDirectory() + "/.vox"
+        let versionFile = voxDir + "/.last-authorized-version"
+        let currentVersion = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "0"
+
+        let lastVersion = try? String(contentsOfFile: versionFile, encoding: .utf8)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+
+        if let last = lastVersion, last != currentVersion, AXIsProcessTrusted() {
+            NSLog("Vox: Version changed (\(last) → \(currentVersion)), resetting stale accessibility permission...")
+            let proc = Process()
+            proc.executableURL = URL(fileURLWithPath: "/usr/bin/tccutil")
+            proc.arguments = ["reset", "Accessibility", "com.justin.vox"]
+            proc.standardOutput = Pipe()
+            proc.standardError = Pipe()
+            try? proc.run()
+            proc.waitUntilExit()
+            NSLog("Vox: TCC reset done (exit=\(proc.terminationStatus)). Will re-prompt for permission.")
+        }
+
+        // Always persist current version
+        try? FileManager.default.createDirectory(atPath: voxDir, withIntermediateDirectories: true)
+        try? currentVersion.write(toFile: versionFile, atomically: true, encoding: .utf8)
     }
 
     // MARK: - Config
@@ -90,7 +124,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem.button?.imagePosition = .imageOnly
 
         let menu = NSMenu()
-        menu.addItem(NSMenuItem(title: "Vox v2.1", action: nil, keyEquivalent: ""))
+        let version = Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "?"
+        menu.addItem(NSMenuItem(title: "Vox v\(version)", action: nil, keyEquivalent: ""))
         menu.addItem(NSMenuItem.separator())
         let hkItem = NSMenuItem(title: "Hotkey: \(hotkey.hotkeyDisplayString)", action: nil, keyEquivalent: "")
         hotkeyMenuItem = hkItem

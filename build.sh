@@ -53,6 +53,9 @@ fi
 # Install to /Applications
 INSTALL_DIR="/Applications/$APP_NAME.app"
 if [ -d "$INSTALL_DIR" ]; then
+    # Clear stale TCC entry before replacing binary — prevents accessibility permission
+    # from appearing "granted" but silently not working after update
+    tccutil reset Accessibility com.justin.vox 2>/dev/null || true
     rm -rf "$INSTALL_DIR"
 fi
 cp -r "$APP_DIR" /Applications/
