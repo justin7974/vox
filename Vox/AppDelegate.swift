@@ -97,19 +97,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(hkItem)
         menu.addItem(NSMenuItem(title: "Launcher: \(hotkey.launcherHotkeyDisplayString)", action: nil, keyEquivalent: ""))
         menu.addItem(NSMenuItem.separator())
-        menu.addItem(NSMenuItem(title: "Settings...", action: #selector(openSettings), keyEquivalent: ","))
 
         let transItem = NSMenuItem(title: "Translate Mode (中→EN)", action: #selector(toggleTranslateMode), keyEquivalent: "t")
         transItem.keyEquivalentModifierMask = []  // just "t" as shortcut when menu is open
         translateMenuItem = transItem
         menu.addItem(transItem)
 
-        menu.addItem(NSMenuItem(title: "View History", action: #selector(openHistory), keyEquivalent: "h"))
-        menu.addItem(NSMenuItem(title: "Black Box", action: #selector(openBlackBox), keyEquivalent: "b"))
-        menu.addItem(NSMenuItem(title: "Edit Prompt", action: #selector(openPromptFile), keyEquivalent: ""))
-        menu.addItem(NSMenuItem(title: "Open Config File", action: #selector(openConfigFile), keyEquivalent: ""))
-        menu.addItem(NSMenuItem(title: "View Log", action: #selector(openLog), keyEquivalent: ""))
+        menu.addItem(NSMenuItem(title: "Black Box", action: #selector(openBlackBox), keyEquivalent: ""))
+
         menu.addItem(NSMenuItem.separator())
+        menu.addItem(NSMenuItem(title: "Settings...", action: #selector(openSettings), keyEquivalent: ","))
         menu.addItem(NSMenuItem(title: "Quit", action: #selector(quit), keyEquivalent: "q"))
         statusItem.menu = menu
     }
@@ -167,7 +164,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Menu Actions
 
     @objc private func openSettings() {
-        showSetup()
+        SettingsWindowController.shared.show()
+    }
+
+    func openHistoryWindow() {
+        openHistory()
     }
 
     @objc private func toggleTranslateMode() {

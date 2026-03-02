@@ -5,7 +5,7 @@ final class ClipboardService {
     static let shared = ClipboardService()
 
     private(set) var history: [ClipboardItem] = []
-    private let maxItems = 50
+    private var maxItems = 50
     private var timer: Timer?
     private var lastChangeCount: Int
 
@@ -31,6 +31,17 @@ final class ClipboardService {
     /// Paste a specific clipboard item to the current cursor position.
     func paste(item: ClipboardItem) {
         PasteService.shared.paste(text: item.text)
+    }
+
+    func setMaxItems(_ count: Int) {
+        maxItems = count
+        if history.count > maxItems {
+            history = Array(history.prefix(maxItems))
+        }
+    }
+
+    func clearHistory() {
+        history.removeAll()
     }
 
     // MARK: - Polling

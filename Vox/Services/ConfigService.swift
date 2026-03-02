@@ -108,6 +108,16 @@ final class ConfigService {
         set { write(key: "historyRetentionDays", value: newValue) }
     }
 
+    // MARK: - Clipboard
+
+    var clipboardMonitoringEnabled: Bool {
+        raw["clipboardMonitoringEnabled"] as? Bool ?? true
+    }
+
+    var clipboardMaxItems: Int {
+        raw["clipboardMaxItems"] as? Int ?? 50
+    }
+
     // MARK: - Edit Window
 
     var editWindowEnabled: Bool {

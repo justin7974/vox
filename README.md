@@ -9,6 +9,16 @@ AI-powered voice input for macOS. Press a hotkey, speak, and text appears at you
 
 ---
 
+## ⚠️ v2.8 版本说明 / v2.8 Release Note
+
+> **这个版本变动比较大，做得也比较仓促，请大家谨慎更新。**
+> 如果有问题，可以随时跟我反馈。
+
+> **This release includes significant changes and was shipped quickly. Please update with caution.**
+> If you encounter any issues, feel free to reach out.
+
+---
+
 ## English
 
 **How it works:** Hotkey → Record → Cloud ASR → LLM cleanup → Paste at cursor
