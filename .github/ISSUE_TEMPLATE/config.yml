@@ -1,0 +1,8 @@
+blank_issues_enabled: true
+contact_links:
+  - name: 💬 General Discussion
+    url: https://github.com/justin7974/vox/discussions
+    about: Chat about Vox, share your setup, ask questions
+  - name: 🗳️ Feature Voting
+    url: https://github.com/justin7974/vox/discussions/categories/ideas
+    about: Vote on features you want most

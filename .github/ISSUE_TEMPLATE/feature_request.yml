@@ -1,0 +1,26 @@
+name: 💡 Feature Request / Idea
+description: Suggest a new feature or improvement
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve?
+      placeholder: I often find myself...
+    validations:
+      required: true
+  - type: textarea
+    id: solution
+    attributes:
+      label: Your proposed solution
+      placeholder: It would be great if Vox could...
+    validations:
+      required: true
+  - type: dropdown
+    id: priority
+    attributes:
+      label: How important is this to you?
+      options:
+        - Nice to have
+        - Would use daily
+        - Can't live without it
