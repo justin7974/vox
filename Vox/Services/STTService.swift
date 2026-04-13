@@ -4,7 +4,12 @@ import Foundation
 
 protocol STTProvider {
     var name: String { get }
+    var maxAudioFileBytes: Int? { get }
     func transcribe(audioFile: URL) async -> String
+}
+
+extension STTProvider {
+    var maxAudioFileBytes: Int? { nil }
 }
 
 // MARK: - WhisperLocalProvider
@@ -82,6 +87,7 @@ struct WhisperLocalProvider: STTProvider {
 
 struct QwenASRProvider: STTProvider {
     let name = "qwen"
+    let maxAudioFileBytes: Int? = 7_000_000 // base64 inflates ~1.37x, keep under 10MB data-uri limit
     private let log = LogService.shared
     private let apiKey: String
 
@@ -89,94 +95,13 @@ struct QwenASRProvider: STTProvider {
         self.apiKey = apiKey
     }
 
-    private let maxBase64Bytes = 9_500_000 // Qwen data-uri limit ~10MB, leave margin
-    private let chunkDurationSeconds = 180
-
     func transcribe(audioFile: URL) async -> String {
         guard let audioData = try? Data(contentsOf: audioFile) else {
             log.debug("Failed to read audio file")
             return ""
         }
-
         let base64Audio = audioData.base64EncodedString()
 
-        if base64Audio.utf8.count > maxBase64Bytes {
-            log.debug("Audio base64 size \(base64Audio.utf8.count) exceeds limit, chunking")
-            return await transcribeChunked(audioFile: audioFile)
-        }
-
-        return await transcribeSingle(base64Audio: base64Audio, audioFile: audioFile)
-    }
-
-    private func transcribeChunked(audioFile: URL) async -> String {
-        let chunkDir = FileManager.default.temporaryDirectory.appendingPathComponent("vox-chunks-\(UUID().uuidString)")
-        try? FileManager.default.createDirectory(at: chunkDir, withIntermediateDirectories: true)
-        defer {
-            try? FileManager.default.removeItem(at: chunkDir)
-        }
-
-        let chunkPattern = chunkDir.appendingPathComponent("chunk-%03d.wav").path
-        let splitSuccess = await splitAudio(input: audioFile.path, outputPattern: chunkPattern)
-        guard splitSuccess else {
-            log.debug("ffmpeg chunking failed, falling back to single request")
-            let base64 = (try? Data(contentsOf: audioFile))?.base64EncodedString() ?? ""
-            return await transcribeSingle(base64Audio: base64, audioFile: audioFile)
-        }
-
-        let chunks = (try? FileManager.default.contentsOfDirectory(at: chunkDir, includingPropertiesForKeys: nil))?.filter {
-            $0.pathExtension == "wav"
-        }.sorted { $0.lastPathComponent < $1.lastPathComponent } ?? []
-
-        log.debug("Split into \(chunks.count) chunks")
-
-        var results: [String] = []
-        for (i, chunk) in chunks.enumerated() {
-            guard let chunkData = try? Data(contentsOf: chunk) else { continue }
-            let chunkBase64 = chunkData.base64EncodedString()
-            log.debug("Transcribing chunk \(i+1)/\(chunks.count), base64 size: \(chunkBase64.utf8.count)")
-            let text = await transcribeSingle(base64Audio: chunkBase64, audioFile: chunk)
-            if !text.isEmpty {
-                results.append(text)
-            }
-        }
-
-        let combined = results.joined(separator: "")
-        log.debug("Chunked transcription done: \(results.count) segments, \(combined.count) chars")
-        return combined
-    }
-
-    private func splitAudio(input: String, outputPattern: String) async -> Bool {
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/local/bin/ffmpeg")
-        if !FileManager.default.fileExists(atPath: "/usr/local/bin/ffmpeg") {
-            process.executableURL = URL(fileURLWithPath: "/opt/homebrew/bin/ffmpeg")
-        }
-        process.arguments = [
-            "-i", input,
-            "-f", "segment",
-            "-segment_time", "\(chunkDurationSeconds)",
-            "-c", "copy",
-            "-y",
-            outputPattern
-        ]
-        process.standardOutput = Pipe()
-        process.standardError = Pipe()
-
-        return await withCheckedContinuation { continuation in
-            process.terminationHandler = { proc in
-                continuation.resume(returning: proc.terminationStatus == 0)
-            }
-            do {
-                try process.run()
-            } catch {
-                process.terminationHandler = nil
-                self.log.debug("ffmpeg split failed: \(error)")
-                continuation.resume(returning: false)
-            }
-        }
-    }
-
-    private func transcribeSingle(base64Audio: String, audioFile: URL) async -> String {
         let ext = audioFile.pathExtension.lowercased()
         let mime: String
         switch ext {
@@ -403,6 +328,8 @@ class STTService {
         }
     }
 
+    private let chunkDurationSeconds = 180
+
     func transcribe(audioFile: URL) async -> String {
         let fileSize = (try? FileManager.default.attributesOfItem(atPath: audioFile.path)[.size] as? Int) ?? 0
         log.debug("Audio file: \(audioFile.lastPathComponent), size: \(fileSize) bytes")
@@ -410,7 +337,13 @@ class STTService {
         let p = provider
         log.debug("Using STT provider: \(p.name)")
 
-        let result = await p.transcribe(audioFile: audioFile)
+        let result: String
+        if let maxBytes = p.maxAudioFileBytes, fileSize > maxBytes {
+            log.debug("File \(fileSize) exceeds provider limit \(maxBytes), chunking")
+            result = await transcribeChunked(audioFile: audioFile, provider: p)
+        } else {
+            result = await p.transcribe(audioFile: audioFile)
+        }
 
         // Hallucination filter (only for local whisper — cloud ASR doesn't hallucinate)
         if p.name == "whisper-local" {
@@ -425,6 +358,74 @@ class STTService {
         }
 
         return result
+    }
+
+    // MARK: - Audio Chunking
+
+    private func transcribeChunked(audioFile: URL, provider p: STTProvider) async -> String {
+        let chunkDir = FileManager.default.temporaryDirectory.appendingPathComponent("vox-chunks-\(UUID().uuidString)")
+        try? FileManager.default.createDirectory(at: chunkDir, withIntermediateDirectories: true)
+        defer {
+            try? FileManager.default.removeItem(at: chunkDir)
+        }
+
+        let chunkPattern = chunkDir.appendingPathComponent("chunk-%03d.wav").path
+        let splitSuccess = await splitAudio(input: audioFile.path, outputPattern: chunkPattern)
+        guard splitSuccess else {
+            log.debug("ffmpeg chunking failed, falling back to single request")
+            return await p.transcribe(audioFile: audioFile)
+        }
+
+        let chunks = (try? FileManager.default.contentsOfDirectory(at: chunkDir, includingPropertiesForKeys: nil))?.filter {
+            $0.pathExtension == "wav"
+        }.sorted { $0.lastPathComponent < $1.lastPathComponent } ?? []
+
+        log.debug("Split into \(chunks.count) chunks")
+
+        var results: [String] = []
+        for (i, chunk) in chunks.enumerated() {
+            let chunkSize = (try? FileManager.default.attributesOfItem(atPath: chunk.path)[.size] as? Int) ?? 0
+            log.debug("Transcribing chunk \(i+1)/\(chunks.count), size: \(chunkSize) bytes")
+            let text = await p.transcribe(audioFile: chunk)
+            if !text.isEmpty {
+                results.append(text)
+            }
+        }
+
+        let combined = results.joined(separator: "")
+        log.debug("Chunked transcription done: \(results.count) segments, \(combined.count) chars")
+        return combined
+    }
+
+    private func splitAudio(input: String, outputPattern: String) async -> Bool {
+        let process = Process()
+        process.executableURL = URL(fileURLWithPath: "/usr/local/bin/ffmpeg")
+        if !FileManager.default.fileExists(atPath: "/usr/local/bin/ffmpeg") {
+            process.executableURL = URL(fileURLWithPath: "/opt/homebrew/bin/ffmpeg")
+        }
+        process.arguments = [
+            "-i", input,
+            "-f", "segment",
+            "-segment_time", "\(chunkDurationSeconds)",
+            "-c", "copy",
+            "-y",
+            outputPattern
+        ]
+        process.standardOutput = Pipe()
+        process.standardError = Pipe()
+
+        return await withCheckedContinuation { continuation in
+            process.terminationHandler = { proc in
+                continuation.resume(returning: proc.terminationStatus == 0)
+            }
+            do {
+                try process.run()
+            } catch {
+                process.terminationHandler = nil
+                self.log.debug("ffmpeg split failed: \(error)")
+                continuation.resume(returning: false)
+            }
+        }
     }
 
     // MARK: - Hallucination Filter
