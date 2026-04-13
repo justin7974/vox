@@ -3,7 +3,6 @@ import Foundation
 struct VoxConfig: Codable {
     // === Hotkey ===
     var dictationHotkey: HotkeyConfig
-    var launcherHotkey: HotkeyConfig?
     var hotkeyMode: String  // "toggle" | "hold"
 
     // === ASR ===
@@ -23,10 +22,9 @@ struct VoxConfig: Codable {
     var historyEnabled: Bool
     var historyRetentionDays: Int
 
-    // === Launcher ===
+    // === Edit Window ===
     var editWindowDuration: Double
     var editWindowEnabled: Bool
-    var clipboardMaxItems: Int
 
     struct HotkeyConfig: Codable {
         var keyCode: UInt32

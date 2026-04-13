@@ -5,6 +5,10 @@ protocol HotkeyDelegate: AnyObject {
     func hotkeyReleased(mode: VoxMode)
 }
 
+enum VoxMode {
+    case dictation
+}
+
 class HotkeyService {
     static let shared = HotkeyService()
 
@@ -12,14 +16,10 @@ class HotkeyService {
 
     private let config = ConfigService.shared
     private var dictationHotKeyRef: EventHotKeyRef?
-    private var launcherHotKeyRef: EventHotKeyRef?
     private var isDictationKeyDown = false
-    private var isLauncherKeyDown = false
     private var eventHandlerInstalled = false
 
-    // Hotkey IDs
     private static let dictationHotKeyID: UInt32 = 1
-    private static let launcherHotKeyID: UInt32 = 2
     private static let signature = OSType(0x56495054) // "VIPT"
 
     // MARK: - Public API
@@ -28,17 +28,11 @@ class HotkeyService {
         HotkeyRecorderView.hotkeyString(keyCode: config.hotkeyKeyCode, modifiers: config.hotkeyModifiers)
     }
 
-    var launcherHotkeyDisplayString: String {
-        guard let kc = config.launcherHotkeyKeyCode else { return "Not set" }
-        return HotkeyRecorderView.hotkeyString(keyCode: kc, modifiers: config.launcherHotkeyModifiers ?? 0)
-    }
-
     var hotkeyMode: String { config.hotkeyMode }
 
     func register() {
         installEventHandlerIfNeeded()
         registerDictationHotkey()
-        registerLauncherHotkey()
     }
 
     func unregister() {
@@ -46,12 +40,7 @@ class HotkeyService {
             UnregisterEventHotKey(ref)
             dictationHotKeyRef = nil
         }
-        if let ref = launcherHotKeyRef {
-            UnregisterEventHotKey(ref)
-            launcherHotKeyRef = nil
-        }
         isDictationKeyDown = false
-        isLauncherKeyDown = false
     }
 
     func reload() {
@@ -97,68 +86,24 @@ class HotkeyService {
 
         let hkStr = hotkeyDisplayString
         if status != noErr {
-            NSLog("Vox: Failed to register dictation hotkey \(hkStr) (status: \(status))")
+            NSLog("Vox: Failed to register hotkey \(hkStr) (status: \(status))")
         } else {
-            NSLog("Vox: Dictation hotkey \(hkStr) registered")
-        }
-    }
-
-    private func registerLauncherHotkey() {
-        guard let keyCode = config.launcherHotkeyKeyCode else {
-            NSLog("Vox: Launcher hotkey not configured, skipping")
-            return
-        }
-        let modifiers = config.launcherHotkeyModifiers ?? 0
-
-        var hotKeyID = EventHotKeyID()
-        hotKeyID.signature = HotkeyService.signature
-        hotKeyID.id = HotkeyService.launcherHotKeyID
-
-        let status = RegisterEventHotKey(
-            keyCode,
-            modifiers,
-            hotKeyID,
-            GetApplicationEventTarget(),
-            0,
-            &launcherHotKeyRef
-        )
-
-        let hkStr = launcherHotkeyDisplayString
-        if status != noErr {
-            NSLog("Vox: Failed to register launcher hotkey \(hkStr) (status: \(status))")
-        } else {
-            NSLog("Vox: Launcher hotkey \(hkStr) registered")
+            NSLog("Vox: Hotkey \(hkStr) registered")
         }
     }
 
     // MARK: - Carbon callback handling
 
     fileprivate func handlePressed(hotKeyID: UInt32) {
-        switch hotKeyID {
-        case HotkeyService.dictationHotKeyID:
-            guard !isDictationKeyDown else { return }
-            isDictationKeyDown = true
-            delegate?.hotkeyPressed(mode: .dictation)
-        case HotkeyService.launcherHotKeyID:
-            guard !isLauncherKeyDown else { return }
-            isLauncherKeyDown = true
-            delegate?.hotkeyPressed(mode: .launcher)
-        default:
-            break
-        }
+        guard hotKeyID == HotkeyService.dictationHotKeyID, !isDictationKeyDown else { return }
+        isDictationKeyDown = true
+        delegate?.hotkeyPressed(mode: .dictation)
     }
 
     fileprivate func handleReleased(hotKeyID: UInt32) {
-        switch hotKeyID {
-        case HotkeyService.dictationHotKeyID:
-            isDictationKeyDown = false
-            delegate?.hotkeyReleased(mode: .dictation)
-        case HotkeyService.launcherHotKeyID:
-            isLauncherKeyDown = false
-            delegate?.hotkeyReleased(mode: .launcher)
-        default:
-            break
-        }
+        guard hotKeyID == HotkeyService.dictationHotKeyID else { return }
+        isDictationKeyDown = false
+        delegate?.hotkeyReleased(mode: .dictation)
     }
 }
 
@@ -172,7 +117,6 @@ private func hotkeyCallback(
     guard let event = event, let userData = userData else { return noErr }
     let service = Unmanaged<HotkeyService>.fromOpaque(userData).takeUnretainedValue()
 
-    // Extract which hotkey was triggered
     var hotKeyID = EventHotKeyID()
     GetEventParameter(
         event,

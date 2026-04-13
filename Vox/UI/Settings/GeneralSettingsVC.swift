@@ -9,7 +9,6 @@ class GeneralSettingsVC: NSObject {
 
     // Controls
     private var dictationRecorder: HotkeyRecorderView!
-    private var launcherRecorder: HotkeyRecorderView!
     private var modeSegment: NSSegmentedControl!
     private var editWindowSwitch: NSSwitch!
     private var editDurationPopup: NSPopUpButton!
@@ -43,22 +42,6 @@ class GeneralSettingsVC: NSObject {
             label: "Dictation Hotkey",
             sublabel: "Press to record, release to stop (or toggle)",
             control: dictationRecorder
-        ))
-
-        let launchCode = config.launcherHotkeyKeyCode ?? UInt32(kVK_ANSI_Grave)
-        let launchMods = config.launcherHotkeyModifiers ?? UInt32(optionKey)
-        launcherRecorder = HotkeyRecorderView(keyCode: launchCode, modifiers: launchMods)
-        launcherRecorder.widthAnchor.constraint(equalToConstant: 160).isActive = true
-        launcherRecorder.heightAnchor.constraint(equalToConstant: 28).isActive = true
-        launcherRecorder.onHotkeyChanged = { [weak self] code, mods in
-            self?.config.write(key: "launcherHotkeyKeyCode", value: Int(code))
-            self?.config.write(key: "launcherHotkeyModifiers", value: Int(mods))
-            AppDelegate.shared?.reloadHotkey()
-        }
-        stack.addArrangedSubview(SettingsUI.makeFormRow(
-            label: "Launcher Hotkey",
-            sublabel: "Opens the voice command launcher",
-            control: launcherRecorder
         ))
 
         modeSegment = NSSegmentedControl(labels: ["Toggle", "Hold"], trackingMode: .selectOne, target: self, action: #selector(modeChanged))

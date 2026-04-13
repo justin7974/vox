@@ -88,7 +88,7 @@ class DictationCoordinator {
     }
 
     private func startRecording() {
-        sm.transition(to: .recording(.dictation))
+        sm.transition(to: .recording)
         overlay.show(phase: sm.phase)
         audio.onAudioLevel = { [weak self] level in
             self?.overlay.updateAudioLevel(level)
@@ -249,7 +249,7 @@ class DictationCoordinator {
         selectLastInsertedText()
 
         isInEditMode = true
-        sm.transition(to: .recording(.dictation))
+        sm.transition(to: .recording)
         overlay.showEditRecording()
         audio.onAudioLevel = { [weak self] level in
             self?.overlay.updateAudioLevel(level)

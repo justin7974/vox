@@ -7,7 +7,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private let hotkey = HotkeyService.shared
     private let dictation = DictationCoordinator()
-    private let launcher = LauncherCoordinator()
     private var setupWindow: SetupWindow?
     private var historyWindowController: HistoryWindowController?
     private var blackBoxWindowController: BlackBoxWindowController?
@@ -21,9 +20,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         setupEditMenu()
         setupStatusBar()
         dictation.onNeedsSetup = { [weak self] in self?.showSetup() }
-        ActionService.shared.loadActions()
-        ActionService.shared.scanInstalledApps()
-        ClipboardService.shared.startMonitoring()
         hotkey.delegate = self
         hotkey.register()
 
@@ -130,7 +126,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let hkItem = NSMenuItem(title: "Hotkey: \(hotkey.hotkeyDisplayString)", action: nil, keyEquivalent: "")
         hotkeyMenuItem = hkItem
         menu.addItem(hkItem)
-        menu.addItem(NSMenuItem(title: "Launcher: \(hotkey.launcherHotkeyDisplayString)", action: nil, keyEquivalent: ""))
         menu.addItem(NSMenuItem.separator())
 
         let transItem = NSMenuItem(title: "Translate Mode (中→EN)", action: #selector(toggleTranslateMode), keyEquivalent: "t")
@@ -265,7 +260,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func quit() {
         dictation.cancelIfRecording()
-        launcher.cancelIfRecording()
         NSApplication.shared.terminate(nil)
     }
 }
@@ -274,20 +268,10 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
 extension AppDelegate: HotkeyDelegate {
     func hotkeyPressed(mode: VoxMode) {
-        switch mode {
-        case .dictation:
-            dictation.hotkeyPressed(mode: hotkey.hotkeyMode)
-        case .launcher:
-            launcher.hotkeyPressed()
-        }
+        dictation.hotkeyPressed(mode: hotkey.hotkeyMode)
     }
 
     func hotkeyReleased(mode: VoxMode) {
-        switch mode {
-        case .dictation:
-            dictation.hotkeyReleased(mode: hotkey.hotkeyMode)
-        case .launcher:
-            launcher.hotkeyReleased()
-        }
+        dictation.hotkeyReleased(mode: hotkey.hotkeyMode)
     }
 }
