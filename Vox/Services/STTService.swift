@@ -131,6 +131,10 @@ struct QwenASRProvider: STTProvider {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
 
+        // NOTE: qwen3-asr-flash via chat/completions REJECTS system role messages with
+        // `InternalError.Algo.InvalidParameter: does not support this input`. Dictionary
+        // hints are applied only at the LLM post-processing layer (LLMService.buildSystemPrompt).
+        // If we later switch to DashScope's native ASR API, it has a `vocabulary_id` field.
         let body: [String: Any] = [
             "model": "qwen3-asr-flash",
             "messages": [

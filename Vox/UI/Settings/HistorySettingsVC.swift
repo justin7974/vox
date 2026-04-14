@@ -26,8 +26,8 @@ class HistorySettingsVC: NSObject {
         ))
 
         retentionPopup = NSPopUpButton()
-        retentionPopup.addItems(withTitles: ["1 day", "3 days", "7 days", "14 days", "30 days"])
-        let retentionValues = [1, 3, 7, 14, 30]
+        retentionPopup.addItems(withTitles: ["1 day", "3 days", "7 days", "14 days", "30 days", "90 days", "365 days", "Forever"])
+        let retentionValues = [1, 3, 7, 14, 30, 90, 365, 0]
         let current = config.historyRetentionDays
         if let idx = retentionValues.firstIndex(of: current) {
             retentionPopup.selectItem(at: idx)
@@ -136,7 +136,7 @@ class HistorySettingsVC: NSObject {
     }
 
     @objc private func retentionChanged() {
-        let values = [1, 3, 7, 14, 30]
+        let values = [1, 3, 7, 14, 30, 90, 365, 0]
         let idx = retentionPopup.indexOfSelectedItem
         if idx >= 0 && idx < values.count {
             config.historyRetentionDays = values[idx]

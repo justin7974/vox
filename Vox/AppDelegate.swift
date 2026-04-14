@@ -140,9 +140,11 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         menu.addItem(transItem)
 
         menu.addItem(NSMenuItem(title: "Black Box", action: #selector(openBlackBox), keyEquivalent: ""))
+        menu.addItem(NSMenuItem(title: "Copy Last Transcription", action: #selector(copyLastTranscription), keyEquivalent: ""))
 
         menu.addItem(NSMenuItem.separator())
         menu.addItem(NSMenuItem(title: "Settings...", action: #selector(openSettings), keyEquivalent: ","))
+        menu.addItem(NSMenuItem(title: "Edit Dictionary...", action: #selector(openDictionary), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: "Repair Permissions...", action: #selector(repairAccessibility), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: "Quit", action: #selector(quit), keyEquivalent: "q"))
         statusItem.menu = menu
@@ -207,6 +209,22 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         } else {
             showSetup()
         }
+    }
+
+    @objc private func copyLastTranscription() {
+        guard let text = PasteService.shared.lastPastedText, !text.isEmpty else {
+            AppDelegate.showNotification(title: "Vox", message: "No transcription yet.")
+            return
+        }
+        let pb = NSPasteboard.general
+        pb.clearContents()
+        pb.setString(text, forType: .string)
+        AppDelegate.showNotification(title: "Vox", message: "Last transcription copied to clipboard.")
+    }
+
+    @objc private func openDictionary() {
+        let path = DictionaryService.shared.dictPath
+        NSWorkspace.shared.open(URL(fileURLWithPath: path))
     }
 
     @objc private func openLog() {

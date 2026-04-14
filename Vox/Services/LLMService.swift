@@ -203,8 +203,9 @@ class LLMService {
     - 自我纠正时只保留最终表达（"周三...不对周四"→"周四"；"三百万...啊不是五百万"→"500万"）
 
     ### 第二步：纠错
-    - 修正 ASR 同音/近音错误，结合上下文推断正确词汇（如"投产"→"投资"、"鸿杉"→"红杉"、"平替"→"平替"）
-    - 英文专有名词修正大小写：AI、GitHub、Claude、GPT、iPhone、MiniMax、Term Sheet、Cap Table、OKR、KPI、LLM、API
+    - 修正 ASR 同音/近音错误，结合上下文推断正确词汇（如"投产"→"投资"）
+    - 若 system prompt 末尾提供了「用户的专有名词列表」，优先按该列表的写法修正
+    - 英文专有名词修正大小写：AI、GitHub、GPT、iPhone、OKR、KPI、API
 
     ### 第三步：中英文处理
     - 用户说英文时保持英文，不翻译（"这个 term sheet"保持原样）
@@ -397,6 +398,10 @@ class LLMService {
         let userContext = config.userContext ?? ""
         if !userContext.isEmpty {
             prompt += "\n\n用户背景：\(userContext)"
+        }
+        let dictTerms = DictionaryService.shared.formatted
+        if !dictTerms.isEmpty {
+            prompt += "\n\n用户的专有名词列表（优先使用这些写法，修正 ASR 同音错误时参考）：\(dictTerms)"
         }
         if let hint = contextHint, !translateMode {
             prompt += "\n\n当前上下文：\(hint)"

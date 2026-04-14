@@ -5,8 +5,13 @@ class PasteService {
 
     private let log = LogService.shared
 
+    /// Last text Vox pasted — kept in memory independent of History toggle so "Copy Last
+    /// Transcription" works even for users with history disabled.
+    private(set) var lastPastedText: String?
+
     func paste(text: String) {
         log.debug("paste called, length=\(text.count)")
+        lastPastedText = text
 
         // Always use clipboard + Cmd+V — most universal method
         // AXValue looks good on paper but Electron apps (Claude, VS Code, Slack etc.)
@@ -68,20 +73,14 @@ class PasteService {
     // MARK: - Clipboard + Cmd+V via CGEvent
 
     private func pasteViaClipboard(text: String) {
+        // Leave the transcribed text in the clipboard after paste — this is the safety net
+        // if the target app fails to consume Cmd+V (Electron apps, lost focus, etc.). The user
+        // can always manually Cmd+V. Overwriting with the previous clipboard raced the target
+        // app's paste handling and caused dictated text to vanish entirely.
         let pasteboard = NSPasteboard.general
-
-        // Snapshot the previous clipboard so we can restore it after paste.
-        let saved: [(type: NSPasteboard.PasteboardType, data: Data)] = pasteboard.pasteboardItems?.flatMap { item in
-            item.types.compactMap { type in
-                item.data(forType: type).map { (type, $0) }
-            }
-        } ?? []
-
         pasteboard.clearContents()
         pasteboard.setString(text, forType: .string)
 
-        // Use dispatch_after instead of usleep so we don't block the main thread waiting for the
-        // pasteboard to settle and for the host app to consume Cmd+V.
         DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 0.05) { [log] in
             let source = CGEventSource(stateID: .hidSystemState)
             if let keyDown = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: true),
@@ -89,7 +88,6 @@ class PasteService {
                 keyDown.flags = .maskCommand
                 keyUp.flags = .maskCommand
                 keyDown.post(tap: .cghidEventTap)
-                // Small gap between down and up so target app registers the chord.
                 Thread.sleep(forTimeInterval: 0.02)
                 keyUp.post(tap: .cghidEventTap)
                 log.debug("CGEvent Cmd+V sent")
@@ -106,20 +104,6 @@ class PasteService {
                     log.debug("osascript exit=\(process.terminationStatus)")
                 } catch {
                     log.debug("osascript failed: \(error)")
-                }
-            }
-
-            // Restore previous clipboard after target app has had a chance to consume our paste.
-            DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 0.3) {
-                DispatchQueue.main.async {
-                    guard !saved.isEmpty else { return }
-                    pasteboard.clearContents()
-                    let restore = NSPasteboardItem()
-                    for (type, data) in saved {
-                        restore.setData(data, forType: type)
-                    }
-                    pasteboard.writeObjects([restore])
-                    log.debug("Clipboard restored (\(saved.count) items)")
                 }
             }
         }
