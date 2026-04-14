@@ -33,6 +33,11 @@ class VoiceSettingsVC: NSObject {
     private var llmKeys: [String: String] = [:]
     private var savedASRKey: String = ""
 
+    // Track previous selection so llmProviderChanged can cache the key to the provider
+    // we're leaving (not the one we're entering — indexOfSelectedItem returns the new value
+    // by the time the action fires).
+    private var lastLLMIndex: Int = 0
+
     private func buildView() -> NSView {
         let (scroll, stack) = SettingsUI.makeScrollableContent()
 
@@ -64,7 +69,7 @@ class VoiceSettingsVC: NSObject {
             asrCardStack.trailingAnchor.constraint(equalTo: asrCard.trailingAnchor, constant: -16),
         ])
 
-        asrKeyField = NSTextField()
+        asrKeyField = NSSecureTextField()
         asrKeyField.placeholderString = "API Key"
         asrKeyField.font = .systemFont(ofSize: 12)
         asrKeyRow = SettingsUI.makeCardRow(label: "API Key", field: asrKeyField)
@@ -137,7 +142,7 @@ class VoiceSettingsVC: NSObject {
             llmCardStack.trailingAnchor.constraint(equalTo: llmCard.trailingAnchor, constant: -16),
         ])
 
-        llmKeyField = NSTextField()
+        llmKeyField = NSSecureTextField()
         llmKeyField.placeholderString = "API Key"
         llmKeyField.font = .systemFont(ofSize: 12)
         llmKeyRow = SettingsUI.makeCardRow(label: "API Key", field: llmKeyField)
@@ -282,6 +287,7 @@ class VoiceSettingsVC: NSObject {
         let current = config.llmProvider ?? "none"
         if let idx = SetupWindow.llmProviders.firstIndex(where: { $0.configKey == current }) {
             llmPopup.selectItem(at: idx)
+            lastLLMIndex = idx
         }
     }
 
@@ -326,15 +332,15 @@ class VoiceSettingsVC: NSObject {
     }
 
     @objc private func llmProviderChanged() {
-        // Cache current key before switching
-        let prevIdx = llmPopup.indexOfSelectedItem
-        if prevIdx >= 0 && prevIdx < SetupWindow.llmProviders.count {
-            let prevKey = SetupWindow.llmProviders[prevIdx].configKey
-            if !llmKeyField.stringValue.isEmpty {
+        // Cache the key under the PREVIOUS provider (indexOfSelectedItem is already the new value here).
+        if lastLLMIndex >= 0 && lastLLMIndex < SetupWindow.llmProviders.count {
+            let prevKey = SetupWindow.llmProviders[lastLLMIndex].configKey
+            if prevKey != "none" && !llmKeyField.stringValue.isEmpty {
                 llmKeys[prevKey] = llmKeyField.stringValue
             }
         }
         updateLLMFieldVisibility()
+        lastLLMIndex = llmPopup.indexOfSelectedItem
     }
 
     @objc private func saveLLMConfig() {

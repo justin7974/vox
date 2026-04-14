@@ -26,13 +26,15 @@ enum VoxPhase: Equatable {
 class VoxStateMachine {
     private(set) var phase: VoxPhase = .idle
 
-    func transition(to newPhase: VoxPhase) {
+    @discardableResult
+    func transition(to newPhase: VoxPhase) -> Bool {
         guard isValid(from: phase, to: newPhase) else {
             NSLog("Vox: Invalid transition: \(phase) -> \(newPhase)")
-            return
+            return false
         }
         NSLog("Vox: Phase: \(phase) -> \(newPhase)")
         phase = newPhase
+        return true
     }
 
     private func isValid(from: VoxPhase, to: VoxPhase) -> Bool {

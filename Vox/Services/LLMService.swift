@@ -121,15 +121,19 @@ struct OpenAIProvider: LLMProvider {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
 
-        let body: [String: Any] = [
+        var body: [String: Any] = [
             "model": model,
             "max_tokens": 2048,
-            "enable_thinking": false,  // Disable thinking for Qwen 3.5+ models (26s -> 1s)
             "messages": [
                 ["role": "system", "content": systemPrompt],
                 ["role": "user", "content": userMessage]
             ]
         ]
+        // enable_thinking is a Qwen-only field (Qwen 3.5+ uses thinking mode by default, 26s latency).
+        // Other OpenAI-compatible providers (DeepSeek, OpenRouter, etc.) reject unknown fields.
+        if model.lowercased().hasPrefix("qwen") || baseURL.contains("dashscope.aliyun") {
+            body["enable_thinking"] = false
+        }
 
         guard let httpBody = try? JSONSerialization.data(withJSONObject: body) else {
             log.debug("Failed to serialize request body")
@@ -406,8 +410,19 @@ class LLMService {
         return provider != nil
     }
 
-    func process(rawText: String, contextHint: String? = nil, translateMode: Bool = false, customSystemPrompt: String? = nil) async -> String {
+    /// Process raw text through LLM.
+    /// - Parameter requireLLM: when true, returns "" on failure/missing config so caller can abort
+    ///   (used by edit/translate modes where rawText fallback is destructive or misleading).
+    ///   When false (default, normal dictation), falls back to rawText on failure.
+    func process(rawText: String, contextHint: String? = nil, translateMode: Bool = false, customSystemPrompt: String? = nil, requireLLM: Bool = false) async -> String {
         guard let p = provider else {
+            if requireLLM {
+                log.debug("LLM required but not configured, aborting")
+                DispatchQueue.main.async {
+                    AppDelegate.showNotification(title: "Vox", message: "LLM not configured. Operation cancelled.")
+                }
+                return ""
+            }
             log.debug("No LLM config, skipping post-processing")
             return rawText
         }
@@ -421,6 +436,13 @@ class LLMService {
         let result = await p.complete(userMessage: rawText, systemPrompt: systemPrompt)
 
         if result.isEmpty {
+            if requireLLM {
+                log.debug("LLM failed in requireLLM mode, aborting")
+                DispatchQueue.main.async {
+                    AppDelegate.showNotification(title: "Vox", message: "LLM request failed. Operation cancelled.")
+                }
+                return ""
+            }
             log.debug("LLM failed, returning raw text")
             DispatchQueue.main.async {
                 AppDelegate.showNotification(title: "Vox", message: "LLM post-processing failed. Using raw transcription.")

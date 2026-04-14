@@ -27,10 +27,25 @@ final class ConfigService {
             return
         }
         raw = json
+        migrateApiKeysToKeychain()
     }
 
+    /// Sets `raw[key] = value`. If value is a provider-dict containing a non-empty apiKey,
+    /// route that apiKey into the keychain and strip it from the on-disk JSON.
     func write(key: String, value: Any) {
-        raw[key] = value
+        var stored: Any = value
+        if var dict = value as? [String: Any], let apiKey = dict["apiKey"] as? String {
+            if !apiKey.isEmpty {
+                KeychainService.set(account: key, value: apiKey)
+            }
+            dict["apiKey"] = ""  // leave placeholder so existing parsers still find the field
+            stored = dict
+        }
+        raw[key] = stored
+        persistRaw()
+    }
+
+    private func persistRaw() {
         if let data = try? JSONSerialization.data(withJSONObject: raw, options: [.prettyPrinted, .sortedKeys]) {
             try? FileManager.default.createDirectory(atPath: configDir, withIntermediateDirectories: true)
             try? data.write(to: URL(fileURLWithPath: configPath))
@@ -51,20 +66,23 @@ final class ConfigService {
     var asrProvider: String { raw["asr"] as? String ?? "whisper" }
 
     var qwenASRApiKey: String? {
-        (raw["qwen-asr"] as? [String: Any])?["apiKey"] as? String
+        apiKey(for: "qwen-asr")
     }
 
     var customASRConfig: (baseURL: String, apiKey: String, model: String)? {
         guard let cfg = raw["custom-asr"] as? [String: Any],
               let baseURL = cfg["baseURL"] as? String,
-              let apiKey = cfg["apiKey"] as? String,
               let model = cfg["model"] as? String else { return nil }
-        return (baseURL, apiKey, model)
+        let key = apiKey(for: "custom-asr") ?? (cfg["apiKey"] as? String ?? "")
+        return (baseURL, key, model)
     }
 
     var whisperExecPath: String {
-        (raw["whisper"] as? [String: Any])?["executablePath"] as? String
-            ?? "/opt/homebrew/bin/whisper-cli"
+        if let configured = (raw["whisper"] as? [String: Any])?["executablePath"] as? String,
+           !configured.isEmpty {
+            return configured
+        }
+        return STTService.resolveBinary(name: "whisper-cli", fallback: "/opt/homebrew/bin/whisper-cli")
     }
 
     var whisperModelPath: String {
@@ -79,9 +97,11 @@ final class ConfigService {
     func llmProviderConfig(for name: String) -> (baseURL: String, apiKey: String, model: String, format: String?)? {
         guard let cfg = raw[name] as? [String: Any],
               let baseURL = cfg["baseURL"] as? String,
-              let apiKey = cfg["apiKey"] as? String,
               let model = cfg["model"] as? String else { return nil }
-        return (baseURL, apiKey, model, cfg["format"] as? String)
+        // qwen-llm shares the ASR key when ASR is also qwen.
+        let keychainAccount = (name == "qwen-llm" && asrProvider == "qwen") ? "qwen-asr" : name
+        let key = apiKey(for: keychainAccount) ?? (cfg["apiKey"] as? String ?? "")
+        return (baseURL, key, model, cfg["format"] as? String)
     }
 
     var userContext: String? { raw["userContext"] as? String }
@@ -106,6 +126,38 @@ final class ConfigService {
 
     var editWindowDuration: Double {
         raw["editWindowDuration"] as? Double ?? 3.0
+    }
+
+    // MARK: - Keychain helpers
+
+    /// Keychain-first lookup with legacy fallback to the JSON dict.
+    private func apiKey(for providerKey: String) -> String? {
+        if let kc = KeychainService.get(account: providerKey), !kc.isEmpty {
+            return kc
+        }
+        if let dict = raw[providerKey] as? [String: Any],
+           let legacy = dict["apiKey"] as? String, !legacy.isEmpty {
+            return legacy
+        }
+        return nil
+    }
+
+    /// One-shot migration: any apiKey field still sitting in config.json gets moved into the keychain
+    /// and replaced with an empty placeholder. Runs on every reload but is a no-op after the first pass.
+    private func migrateApiKeysToKeychain() {
+        var mutated = false
+        for (key, value) in raw {
+            guard var dict = value as? [String: Any],
+                  let apiKey = dict["apiKey"] as? String,
+                  !apiKey.isEmpty else { continue }
+            if KeychainService.set(account: key, value: apiKey) {
+                dict["apiKey"] = ""
+                raw[key] = dict
+                mutated = true
+                NSLog("Vox: Migrated \(key) apiKey to Keychain")
+            }
+        }
+        if mutated { persistRaw() }
     }
 
     // MARK: - Migration

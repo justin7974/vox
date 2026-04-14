@@ -135,7 +135,13 @@ class StatusOverlay {
     }
 
     private func positionAndShow(_ window: NSWindow) {
-        guard let screen = NSScreen.main else { return }
+        // Prefer the screen currently under the mouse (where the user is working) rather than
+        // NSScreen.main, which is whichever screen has the focused window — often the wrong one on
+        // multi-monitor setups.
+        let mouse = NSEvent.mouseLocation
+        let screen = NSScreen.screens.first(where: { NSMouseInRect(mouse, $0.frame, false) })
+            ?? NSScreen.main
+        guard let screen = screen else { return }
         let screenFrame = screen.visibleFrame
         let x = screenFrame.midX - window.frame.width / 2
         let y = screenFrame.origin.y + 80

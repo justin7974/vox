@@ -69,33 +69,58 @@ class PasteService {
 
     private func pasteViaClipboard(text: String) {
         let pasteboard = NSPasteboard.general
+
+        // Snapshot the previous clipboard so we can restore it after paste.
+        let saved: [(type: NSPasteboard.PasteboardType, data: Data)] = pasteboard.pasteboardItems?.flatMap { item in
+            item.types.compactMap { type in
+                item.data(forType: type).map { (type, $0) }
+            }
+        } ?? []
+
         pasteboard.clearContents()
         pasteboard.setString(text, forType: .string)
 
-        usleep(50_000)
-        let source = CGEventSource(stateID: .hidSystemState)
-        if let keyDown = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: true) {
-            keyDown.flags = .maskCommand
-            keyDown.post(tap: .cghidEventTap)
-            usleep(20_000)
-            if let keyUp = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: false) {
+        // Use dispatch_after instead of usleep so we don't block the main thread waiting for the
+        // pasteboard to settle and for the host app to consume Cmd+V.
+        DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 0.05) { [log] in
+            let source = CGEventSource(stateID: .hidSystemState)
+            if let keyDown = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: true),
+               let keyUp = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: false) {
+                keyDown.flags = .maskCommand
                 keyUp.flags = .maskCommand
+                keyDown.post(tap: .cghidEventTap)
+                // Small gap between down and up so target app registers the chord.
+                Thread.sleep(forTimeInterval: 0.02)
                 keyUp.post(tap: .cghidEventTap)
+                log.debug("CGEvent Cmd+V sent")
+            } else {
+                log.debug("CGEvent failed, trying osascript fallback...")
+                let process = Process()
+                process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+                process.arguments = ["-e", "tell application \"System Events\" to keystroke \"v\" using command down"]
+                process.standardOutput = Pipe()
+                process.standardError = Pipe()
+                do {
+                    try process.run()
+                    process.waitUntilExit()
+                    log.debug("osascript exit=\(process.terminationStatus)")
+                } catch {
+                    log.debug("osascript failed: \(error)")
+                }
             }
-            log.debug("CGEvent Cmd+V sent")
-        } else {
-            log.debug("CGEvent failed, trying osascript fallback...")
-            let process = Process()
-            process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-            process.arguments = ["-e", "tell application \"System Events\" to keystroke \"v\" using command down"]
-            process.standardOutput = Pipe()
-            process.standardError = Pipe()
-            do {
-                try process.run()
-                process.waitUntilExit()
-                log.debug("osascript exit=\(process.terminationStatus)")
-            } catch {
-                log.debug("osascript failed: \(error)")
+
+            // Restore previous clipboard after target app has had a chance to consume our paste.
+            DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 0.3) {
+                DispatchQueue.main.async {
+                    guard !saved.isEmpty else { return }
+                    pasteboard.clearContents()
+                    let restore = NSPasteboardItem()
+                    for (type, data) in saved {
+                        restore.setData(data, forType: type)
+                    }
+                    pasteboard.writeObjects([restore])
+                    log.debug("Clipboard restored (\(saved.count) items)")
+                }
             }
         }
     }

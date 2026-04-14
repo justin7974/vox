@@ -40,8 +40,16 @@ struct WhisperLocalProvider: STTProvider {
         process.standardOutput = outputPipe
         process.standardError = Pipe()
 
+        // Drain stderr in parallel so whisper-cli doesn't block on a full pipe buffer.
+        let errorPipe = Pipe()
+        process.standardError = errorPipe
+        errorPipe.fileHandleForReading.readabilityHandler = { handle in
+            _ = handle.availableData
+        }
+
         return await withCheckedContinuation { continuation in
             process.terminationHandler = { _ in
+                errorPipe.fileHandleForReading.readabilityHandler = nil
                 let data = outputPipe.fileHandleForReading.readDataToEndOfFile()
                 let output = String(data: data, encoding: .utf8) ?? ""
                 continuation.resume(returning: self.parseWhisperOutput(output))
@@ -50,6 +58,7 @@ struct WhisperLocalProvider: STTProvider {
                 try process.run()
             } catch {
                 process.terminationHandler = nil
+                errorPipe.fileHandleForReading.readabilityHandler = nil
                 self.log.debug("Whisper failed: \(error)")
                 continuation.resume(returning: "")
             }
@@ -350,10 +359,10 @@ class STTService {
             return filterHallucination(result)
         }
 
-        // Cloud providers: only filter truly empty/whitespace
+        // Cloud providers: only filter truly empty results — short answers like "好"/"是" are legitimate.
         let trimmed = result.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.count < 2 {
-            log.debug("\(p.name) result too short, discarding: [\(result)]")
+        if trimmed.isEmpty {
+            log.debug("\(p.name) returned empty result")
             return ""
         }
 
@@ -392,17 +401,16 @@ class STTService {
             }
         }
 
-        let combined = results.joined(separator: "")
+        // Use a space separator: Chinese segments still read fine with a space, but English segments
+        // would otherwise collide ("meetingfinished" instead of "meeting finished").
+        let combined = results.joined(separator: " ")
         log.debug("Chunked transcription done: \(results.count) segments, \(combined.count) chars")
         return combined
     }
 
     private func splitAudio(input: String, outputPattern: String) async -> Bool {
         let process = Process()
-        process.executableURL = URL(fileURLWithPath: "/usr/local/bin/ffmpeg")
-        if !FileManager.default.fileExists(atPath: "/usr/local/bin/ffmpeg") {
-            process.executableURL = URL(fileURLWithPath: "/opt/homebrew/bin/ffmpeg")
-        }
+        process.executableURL = URL(fileURLWithPath: STTService.resolveBinary(name: "ffmpeg", fallback: "/opt/homebrew/bin/ffmpeg"))
         process.arguments = [
             "-i", input,
             "-f", "segment",
@@ -411,21 +419,45 @@ class STTService {
             "-y",
             outputPattern
         ]
-        process.standardOutput = Pipe()
-        process.standardError = Pipe()
+        let stdoutPipe = Pipe()
+        let stderrPipe = Pipe()
+        process.standardOutput = stdoutPipe
+        process.standardError = stderrPipe
+        // Drain both pipes so ffmpeg doesn't stall on a full buffer for a long recording.
+        stdoutPipe.fileHandleForReading.readabilityHandler = { handle in _ = handle.availableData }
+        stderrPipe.fileHandleForReading.readabilityHandler = { handle in _ = handle.availableData }
 
         return await withCheckedContinuation { continuation in
             process.terminationHandler = { proc in
+                stdoutPipe.fileHandleForReading.readabilityHandler = nil
+                stderrPipe.fileHandleForReading.readabilityHandler = nil
                 continuation.resume(returning: proc.terminationStatus == 0)
             }
             do {
                 try process.run()
             } catch {
                 process.terminationHandler = nil
+                stdoutPipe.fileHandleForReading.readabilityHandler = nil
+                stderrPipe.fileHandleForReading.readabilityHandler = nil
                 self.log.debug("ffmpeg split failed: \(error)")
                 continuation.resume(returning: false)
             }
         }
+    }
+
+    /// Resolve a binary by checking standard Homebrew locations on both Apple Silicon (/opt/homebrew)
+    /// and Intel (/usr/local), then /usr/bin, before falling back. Returns the first existing path.
+    static func resolveBinary(name: String, fallback: String) -> String {
+        let candidates = [
+            "/opt/homebrew/bin/\(name)",
+            "/usr/local/bin/\(name)",
+            "/usr/bin/\(name)",
+        ]
+        let fm = FileManager.default
+        for path in candidates where fm.isExecutableFile(atPath: path) {
+            return path
+        }
+        return fallback
     }
 
     // MARK: - Hallucination Filter

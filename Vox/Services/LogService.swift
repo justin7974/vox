@@ -6,8 +6,21 @@ final class LogService {
     private let logPath: String
     private let queue = DispatchQueue(label: "com.vox.log", qos: .utility)
 
+    // ISO8601DateFormatter isn't thread-safe to configure but safe for string(from:);
+    // hold a single shared instance to avoid allocating one per log call.
+    private static let timestampFormatter: ISO8601DateFormatter = {
+        let f = ISO8601DateFormatter()
+        f.formatOptions = [.withInternetDateTime, .withFractionalSeconds]
+        return f
+    }()
+
+    // Rotation thresholds.
+    private let maxLogBytes: Int = 5 * 1024 * 1024  // 5 MB triggers rotation
+    private let rotatedSuffix = ".1"
+
     private init() {
         logPath = NSHomeDirectory() + "/.vox/debug.log"
+        rotateIfNeeded()
     }
 
     func debug(_ msg: String, tag: String? = nil) {
@@ -27,22 +40,42 @@ final class LogService {
     }
 
     private func log(_ msg: String, level: String, tag: String?) {
-        let ts = ISO8601DateFormatter().string(from: Date())
+        let ts = LogService.timestampFormatter.string(from: Date())
         let prefix = tag.map { "[\($0) \(ts)]" } ?? "[\(ts)]"
         let line = "\(prefix) \(msg)\n"
         NSLog("Vox: \(msg)")
 
-        queue.async { [logPath] in
+        queue.async { [logPath, maxLogBytes, rotatedSuffix] in
             guard let data = line.data(using: .utf8) else { return }
-            if FileManager.default.fileExists(atPath: logPath) {
-                if let fh = FileHandle(forWritingAtPath: logPath) {
+            let fm = FileManager.default
+            if fm.fileExists(atPath: logPath) {
+                // Cheap size check; rotate in-place so the live handle gets a fresh file.
+                if let attrs = try? fm.attributesOfItem(atPath: logPath),
+                   let size = attrs[.size] as? Int, size > maxLogBytes {
+                    let rotated = logPath + rotatedSuffix
+                    try? fm.removeItem(atPath: rotated)
+                    try? fm.moveItem(atPath: logPath, toPath: rotated)
+                }
+                if !fm.fileExists(atPath: logPath) {
+                    fm.createFile(atPath: logPath, contents: data)
+                } else if let fh = FileHandle(forWritingAtPath: logPath) {
                     fh.seekToEndOfFile()
                     fh.write(data)
                     fh.closeFile()
                 }
             } else {
-                FileManager.default.createFile(atPath: logPath, contents: data)
+                fm.createFile(atPath: logPath, contents: data)
             }
         }
+    }
+
+    /// One-shot rotation check at init time in case the previous run left a large file.
+    private func rotateIfNeeded() {
+        let fm = FileManager.default
+        guard let attrs = try? fm.attributesOfItem(atPath: logPath),
+              let size = attrs[.size] as? Int, size > maxLogBytes else { return }
+        let rotated = logPath + rotatedSuffix
+        try? fm.removeItem(atPath: rotated)
+        try? fm.moveItem(atPath: logPath, toPath: rotated)
     }
 }

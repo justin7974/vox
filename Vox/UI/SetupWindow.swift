@@ -664,7 +664,7 @@ class SetupWindow: NSObject, NSWindowDelegate {
 
         // Qwen API Key row
         let keyRow = makeFormRow(label: "API Key")
-        asrKeyField = NSTextField()
+        asrKeyField = NSSecureTextField()
         asrKeyField.translatesAutoresizingMaskIntoConstraints = false
         asrKeyField.placeholderString = "sk-..."
         asrKeyField.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
@@ -794,7 +794,7 @@ class SetupWindow: NSObject, NSWindowDelegate {
 
         // API Key
         let keyRow = makeFormRow(label: "API Key")
-        llmKeyField = NSTextField()
+        llmKeyField = NSSecureTextField()
         llmKeyField.translatesAutoresizingMaskIntoConstraints = false
         llmKeyField.placeholderString = "sk-..."
         llmKeyField.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
@@ -914,7 +914,7 @@ class SetupWindow: NSObject, NSWindowDelegate {
             testStatusLabel.stringValue = "Transcribing your speech..."
             audioLevelView?.isHidden = true
 
-            guard let url = testRecorder?.stopRecording() else {
+            guard let url = testRecorder?.stopRecording(backup: false) else {
                 testStatusLabel.stringValue = "Recording failed. Try again."
                 testButton.title = "   Start Recording   "
                 testButton.isEnabled = true
@@ -1218,7 +1218,13 @@ class SetupWindow: NSObject, NSWindowDelegate {
                 configStatusLabel.stringValue = "Please enter your custom LLM endpoint URL."
                 return false
             }
-        } else if llmProvider.configKey != "none" && llmProvider.configKey != "qwen-llm" && llmKeyField.stringValue.isEmpty {
+        } else if llmProvider.configKey == "qwen-llm" {
+            // qwen-llm only skips key validation when ASR is qwen (shares the same key).
+            if asrProvider.configKey != "qwen" && llmKeyField.stringValue.isEmpty {
+                configStatusLabel.stringValue = "Please enter a Qwen API key for the LLM, or switch ASR to Qwen."
+                return false
+            }
+        } else if llmProvider.configKey != "none" && llmKeyField.stringValue.isEmpty {
             configStatusLabel.stringValue = "Please enter your LLM API key, or select None."
             return false
         }
@@ -1255,14 +1261,19 @@ class SetupWindow: NSObject, NSWindowDelegate {
         } else if !savedASRKey.isEmpty {
             qwenKey = savedASRKey
         } else {
-            let configPath = NSHomeDirectory() + "/.vox/config.json"
-            if let data = FileManager.default.contents(atPath: configPath),
-               let existing = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-               let qwenConfig = existing["qwen-asr"] as? [String: Any],
-               let key = qwenConfig["apiKey"] as? String {
-                qwenKey = key
+            // Prefer keychain; fall back to legacy JSON.
+            if let kc = KeychainService.get(account: "qwen-asr"), !kc.isEmpty {
+                qwenKey = kc
             } else {
-                qwenKey = ""
+                let configPath = NSHomeDirectory() + "/.vox/config.json"
+                if let data = FileManager.default.contents(atPath: configPath),
+                   let existing = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                   let qwenConfig = existing["qwen-asr"] as? [String: Any],
+                   let key = qwenConfig["apiKey"] as? String {
+                    qwenKey = key
+                } else {
+                    qwenKey = ""
+                }
             }
         }
         if !qwenKey.isEmpty {
@@ -1292,9 +1303,10 @@ class SetupWindow: NSObject, NSWindowDelegate {
             "modelPath": whisperModel
         ]
 
-        // Save current LLM key
+        // Save current LLM key.
+        // qwen-llm shares ASR key only when ASR is actually Qwen — otherwise read the visible LLM key field.
         if llmProvider.configKey != "none" {
-            if llmProvider.configKey == "qwen-llm" {
+            if llmProvider.configKey == "qwen-llm" && asrProvider.configKey == "qwen" {
                 llmKeys["qwen-llm"] = asrKeyField.stringValue
             } else {
                 llmKeys[llmProvider.configKey] = llmKeyField.stringValue
@@ -1375,8 +1387,11 @@ class SetupWindow: NSObject, NSWindowDelegate {
             selectedModifiers = UInt32(modifiers)
         }
 
-        if let qwenConfig = json["qwen-asr"] as? [String: Any],
-           let key = qwenConfig["apiKey"] as? String {
+        // Prefer Keychain; fall back to JSON for pre-migration configs.
+        if let kc = KeychainService.get(account: "qwen-asr"), !kc.isEmpty {
+            savedASRKey = kc
+        } else if let qwenConfig = json["qwen-asr"] as? [String: Any],
+                  let key = qwenConfig["apiKey"] as? String, !key.isEmpty {
             savedASRKey = key
         }
 
@@ -1389,11 +1404,13 @@ class SetupWindow: NSObject, NSWindowDelegate {
             }
         }
 
-        // Load custom ASR config
+        // Load custom ASR config (apiKey from Keychain with JSON legacy fallback)
         if let customASR = json["custom-asr"] as? [String: Any] {
+            let kcKey = KeychainService.get(account: "custom-asr") ?? ""
+            let key = !kcKey.isEmpty ? kcKey : (customASR["apiKey"] as? String ?? "")
             savedCustomASR = (
                 customASR["baseURL"] as? String ?? "",
-                customASR["apiKey"] as? String ?? "",
+                key,
                 customASR["model"] as? String ?? ""
             )
         }
@@ -1406,23 +1423,23 @@ class SetupWindow: NSObject, NSWindowDelegate {
             )
         }
 
-        // Load custom LLM config
+        // Load custom LLM config (apiKey from Keychain with JSON legacy fallback)
         if let customLLM = json["custom-llm"] as? [String: Any] {
             savedCustomLLM = (
                 customLLM["baseURL"] as? String ?? "",
                 customLLM["model"] as? String ?? "",
                 customLLM["format"] as? String ?? "openai"
             )
-            if let key = customLLM["apiKey"] as? String {
-                llmKeys["custom-llm"] = key
-            }
+            let kcKey = KeychainService.get(account: "custom-llm") ?? ""
+            let key = !kcKey.isEmpty ? kcKey : (customLLM["apiKey"] as? String ?? "")
+            llmKeys["custom-llm"] = key
         }
 
         for p in SetupWindow.llmProviders where p.configKey != "none" {
-            if let providerConfig = json[p.configKey] as? [String: Any],
-               let key = providerConfig["apiKey"] as? String {
-                llmKeys[p.configKey] = key
-            }
+            guard json[p.configKey] is [String: Any] else { continue }
+            let kcKey = KeychainService.get(account: p.configKey) ?? ""
+            let legacyKey = (json[p.configKey] as? [String: Any])?["apiKey"] as? String ?? ""
+            llmKeys[p.configKey] = !kcKey.isEmpty ? kcKey : legacyKey
         }
 
         if let provider = json["provider"] as? String {
@@ -1473,8 +1490,10 @@ class SetupWindow: NSObject, NSWindowDelegate {
         let isNone = llmProvider.configKey == "none"
         let isQwenLLM = llmProvider.configKey == "qwen-llm"
         let isCustomLLM = llmProvider.configKey == "custom-llm"
+        // qwen-llm reuses the ASR key only if ASR provider is actually Qwen.
+        let qwenLLMSharesKey = isQwenLLM && asrProvider.configKey == "qwen"
 
-        llmKeyRow.isHidden = isNone || isQwenLLM
+        llmKeyRow.isHidden = isNone || qwenLLMSharesKey
         llmBaseURLRow.isHidden = !isCustomLLM
         llmModelRow.isHidden = !isCustomLLM
         llmFormatRow.isHidden = !isCustomLLM
@@ -1484,7 +1503,7 @@ class SetupWindow: NSObject, NSWindowDelegate {
             llmModelField.stringValue = savedCustomLLM.model
             llmFormatPopup.selectItem(at: savedCustomLLM.format == "anthropic" ? 1 : 0)
             llmKeyField.stringValue = llmKeys["custom-llm"] ?? ""
-        } else if isQwenLLM {
+        } else if qwenLLMSharesKey {
             llmKeyField.stringValue = asrKeyField.stringValue
         } else {
             llmKeyField.stringValue = llmKeys[llmProvider.configKey] ?? ""
@@ -1513,7 +1532,13 @@ class SetupWindow: NSObject, NSWindowDelegate {
             savedCustomLLM = (llmBaseURLField.stringValue, llmModelField.stringValue,
                               llmFormatPopup.indexOfSelectedItem == 0 ? "openai" : "anthropic")
             llmKeys["custom-llm"] = llmKeyField.stringValue
-        } else if llmProvider.configKey != "none" && llmProvider.configKey != "qwen-llm" {
+        } else if llmProvider.configKey == "qwen-llm" {
+            // Only skip caching when the key field is hidden (i.e. ASR is qwen and we share its key).
+            let asrProvider = SetupWindow.asrProviders[selectedASRIndex]
+            if asrProvider.configKey != "qwen" {
+                llmKeys["qwen-llm"] = llmKeyField.stringValue
+            }
+        } else if llmProvider.configKey != "none" {
             llmKeys[llmProvider.configKey] = llmKeyField.stringValue
         }
         lastLLMIndex = llmIndex
@@ -1586,17 +1611,21 @@ class SetupWindow: NSObject, NSWindowDelegate {
 
         let newIndex = llmPopup.indexOfSelectedItem
         let newProvider = SetupWindow.llmProviders[newIndex]
+        let asrProvider = SetupWindow.asrProviders[selectedASRIndex]
         let isNone = newProvider.configKey == "none"
         let isQwenLLM = newProvider.configKey == "qwen-llm"
         let isCustom = newProvider.configKey == "custom-llm"
+        let qwenLLMSharesKey = isQwenLLM && asrProvider.configKey == "qwen"
 
-        llmKeyRow.isHidden = isNone || isQwenLLM
+        llmKeyRow.isHidden = isNone || qwenLLMSharesKey
         llmBaseURLRow.isHidden = !isCustom
         llmModelRow.isHidden = !isCustom
         llmFormatRow.isHidden = !isCustom
 
-        if isQwenLLM {
+        if qwenLLMSharesKey {
             llmKeyField.stringValue = asrKeyField.stringValue
+        } else if isQwenLLM {
+            llmKeyField.stringValue = llmKeys["qwen-llm"] ?? ""
         } else if isCustom {
             llmBaseURLField.stringValue = savedCustomLLM.baseURL
             llmModelField.stringValue = savedCustomLLM.model
@@ -1664,7 +1693,7 @@ class SetupWindow: NSObject, NSWindowDelegate {
 
     func windowWillClose(_ notification: Notification) {
         if testIsRecording {
-            testRecorder?.stopRecording()
+            testRecorder?.stopRecording(backup: false)
             testRecorder = nil
             testIsRecording = false
         }

@@ -18,6 +18,7 @@ class DictationCoordinator {
     private var lastInsertedLength: Int = 0
     private var editWindowTimer: Timer?
     private var keyEventMonitor: Any?
+    private var localKeyEventMonitor: Any?
     private var isInEditMode: Bool = false
 
     /// Called when setup wizard needs to be shown (no config)
@@ -88,7 +89,7 @@ class DictationCoordinator {
     }
 
     private func startRecording() {
-        sm.transition(to: .recording)
+        guard sm.transition(to: .recording) else { return }
         overlay.show(phase: sm.phase)
         audio.onAudioLevel = { [weak self] level in
             self?.overlay.updateAudioLevel(level)
@@ -103,10 +104,9 @@ class DictationCoordinator {
     private func stopAndProcess() {
         audio.onAudioLevel = nil
 
-        // Capture app context and translate mode NOW on the main thread
-        let appContext = context.detect()
-        let contextHint = context.contextHint(for: appContext)
+        // Translate mode must be captured on main thread before we leave it.
         let isTranslate = AppDelegate.shared.translateMode
+        let llmConfigured = llm.isConfigured
 
         guard let audioURL = audio.stopRecording() else {
             sm.transition(to: .idle)
@@ -133,10 +133,31 @@ class DictationCoordinator {
             return
         }
 
-        sm.transition(to: .transcribing)
+        // Translate mode requires LLM; abort immediately if not configured rather than pasting raw text as "translation".
+        if isTranslate && !llmConfigured {
+            NSLog("Vox: Translate mode requires LLM but none configured — aborting")
+            sm.transition(to: .idle)
+            overlay.show(phase: sm.phase)
+            NSSound(named: "Basso")?.play()
+            AppDelegate.showNotification(title: "Vox", message: "Translate mode requires an LLM. Configure one in Settings.")
+            try? FileManager.default.removeItem(at: audioURL)
+            return
+        }
+
+        guard sm.transition(to: .transcribing) else {
+            try? FileManager.default.removeItem(at: audioURL)
+            return
+        }
         overlay.show(phase: sm.phase)
         NSSound(named: "Pop")?.play()
         NSLog("Vox: Recording stopped (\(fileSize) bytes, peak: \(audio.peakPower) dB), processing...")
+
+        // AppleScript-based context detection can block the main thread for seconds if the browser
+        // is unresponsive. Run it concurrently with transcription off the main thread.
+        let contextTask = Task.detached(priority: .userInitiated) { [context] in
+            let ctx = context.detect()
+            return context.contextHint(for: ctx)
+        }
 
         Task { [weak self] in
             guard let self = self else { return }
@@ -160,8 +181,21 @@ class DictationCoordinator {
                 self.sm.transition(to: .postProcessing)
             }
 
+            let contextHint = await contextTask.value
             self.log.debug("Step 2: LLM start (context: \(contextHint ?? "none"), translate: \(isTranslate))")
-            let cleanText = await self.llm.process(rawText: rawText, contextHint: contextHint, translateMode: isTranslate)
+            // Translate mode must not fall back to raw text — we already aborted above if LLM missing.
+            let cleanText = await self.llm.process(rawText: rawText, contextHint: contextHint, translateMode: isTranslate, requireLLM: isTranslate)
+
+            if isTranslate && cleanText.isEmpty {
+                self.log.debug("Translate: LLM returned empty, aborting")
+                await MainActor.run {
+                    self.sm.transition(to: .idle)
+                    self.overlay.show(phase: self.sm.phase)
+                }
+                try? FileManager.default.removeItem(at: audioURL)
+                return
+            }
+
             let postProcessed = cleanText.isEmpty ? rawText : cleanText
             self.log.debug("Step 2: LLM result: [\(postProcessed)]")
 
@@ -214,10 +248,16 @@ class DictationCoordinator {
             self?.expireEditWindow()
         }
 
-        // Any other keyboard input cancels the edit window
+        // Any other keyboard input cancels the edit window.
+        // Global monitor fires when other apps are frontmost; local monitor fires when Vox itself is frontmost.
         keyEventMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] _ in
             guard let self = self, self.sm.phase == .editWindow else { return }
             self.expireEditWindow()
+        }
+        localKeyEventMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard let self = self, self.sm.phase == .editWindow else { return event }
+            self.expireEditWindow()
+            return event
         }
     }
 
@@ -238,6 +278,10 @@ class DictationCoordinator {
             NSEvent.removeMonitor(monitor)
             keyEventMonitor = nil
         }
+        if let monitor = localKeyEventMonitor {
+            NSEvent.removeMonitor(monitor)
+            localKeyEventMonitor = nil
+        }
     }
 
     // MARK: - Edit Mode Recording
@@ -248,8 +292,8 @@ class DictationCoordinator {
         // Select last inserted text via Accessibility API
         selectLastInsertedText()
 
+        guard sm.transition(to: .recording) else { return }
         isInEditMode = true
-        sm.transition(to: .recording)
         overlay.showEditRecording()
         audio.onAudioLevel = { [weak self] level in
             self?.overlay.updateAudioLevel(level)
@@ -270,8 +314,8 @@ class DictationCoordinator {
         }
 
         let fileSize = (try? FileManager.default.attributesOfItem(atPath: audioURL.path)[.size] as? Int) ?? 0
-        if fileSize < 16000 {
-            NSLog("Vox: Edit recording too short, ignoring")
+        if fileSize < 16000 || !audio.hasAudio {
+            NSLog("Vox: Edit recording too short or silent (size: \(fileSize), peak: \(audio.peakPower) dB), ignoring")
             sm.transition(to: .idle)
             overlay.hide()
             isInEditMode = false
@@ -309,14 +353,17 @@ class DictationCoordinator {
             }
 
             let userMessage = "原文：\(originalText)\n\n修改指令：\(editInstruction)"
-            let editedText = await self.llm.process(rawText: userMessage, customSystemPrompt: LLMService.editPrompt)
+            let editedText = await self.llm.process(rawText: userMessage, customSystemPrompt: LLMService.editPrompt, requireLLM: true)
             self.log.debug("Edit result: [\(editedText)]")
 
             guard !editedText.isEmpty else {
+                // LLM failed/unavailable — must abort rather than paste the "原文+指令" prompt back into the input.
+                self.log.debug("Edit: LLM returned empty, aborting (original text left untouched)")
                 await MainActor.run {
                     self.sm.transition(to: .idle)
                     self.overlay.hide()
                     self.isInEditMode = false
+                    NSSound(named: "Basso")?.play()
                 }
                 try? FileManager.default.removeItem(at: audioURL)
                 return

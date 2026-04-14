@@ -207,7 +207,7 @@ class GeneralSettingsVC: NSObject {
         testStatusLabel.stringValue = "Processing..."
         testStatusLabel.textColor = .secondaryLabelColor
 
-        guard let audioFile = testRecorder?.stopRecording() else {
+        guard let audioFile = testRecorder?.stopRecording(backup: false) else {
             testStatusLabel.stringValue = "No audio captured"
             return
         }

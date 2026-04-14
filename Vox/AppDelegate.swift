@@ -23,8 +23,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         hotkey.delegate = self
         hotkey.register()
 
-        // On version change, reset stale TCC entry so macOS re-prompts correctly
-        resetAccessibilityIfVersionChanged()
+        // Always persist the current version for Repair Permissions to compare against.
+        persistCurrentVersion()
 
         // Check accessibility for auto-paste (Cmd+V simulation)
         let key = kAXTrustedCheckOptionPrompt.takeUnretainedValue() as String
@@ -43,35 +43,41 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         }
     }
 
-    // MARK: - TCC Permission Fix
+    // MARK: - TCC Permission Repair
 
-    /// When the app binary changes (e.g. version update), macOS TCC may retain a stale
-    /// accessibility entry that looks "granted" but doesn't actually work for CGEvent posting.
-    /// This detects version changes and proactively clears the stale entry so macOS will
-    /// re-prompt the user — much better UX than silently failing.
-    private func resetAccessibilityIfVersionChanged() {
+    /// Persist the current bundle version so Repair Permissions can detect version changes.
+    private func persistCurrentVersion() {
         let voxDir = NSHomeDirectory() + "/.vox"
         let versionFile = voxDir + "/.last-authorized-version"
         let currentVersion = Bundle.main.infoDictionary?["CFBundleVersion"] as? String ?? "0"
-
-        let lastVersion = try? String(contentsOfFile: versionFile, encoding: .utf8)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-
-        if let last = lastVersion, last != currentVersion, AXIsProcessTrusted() {
-            NSLog("Vox: Version changed (\(last) → \(currentVersion)), resetting stale accessibility permission...")
-            let proc = Process()
-            proc.executableURL = URL(fileURLWithPath: "/usr/bin/tccutil")
-            proc.arguments = ["reset", "Accessibility", "com.justin.vox"]
-            proc.standardOutput = Pipe()
-            proc.standardError = Pipe()
-            try? proc.run()
-            proc.waitUntilExit()
-            NSLog("Vox: TCC reset done (exit=\(proc.terminationStatus)). Will re-prompt for permission.")
-        }
-
-        // Always persist current version
         try? FileManager.default.createDirectory(atPath: voxDir, withIntermediateDirectories: true)
         try? currentVersion.write(toFile: versionFile, atomically: true, encoding: .utf8)
+    }
+
+    /// User-triggered repair: reset the stale TCC entry so macOS re-prompts.
+    /// Previously this ran automatically on every version change, which surprised users and
+    /// required them to re-grant a permission they had already granted. Now it's opt-in via the menu.
+    @objc private func repairAccessibility() {
+        let alert = NSAlert()
+        alert.messageText = "Reset Accessibility Permission?"
+        alert.informativeText = "This clears Vox's Accessibility permission so macOS will prompt you to re-grant it. Use this only if paste/Cmd+V has stopped working after an update."
+        alert.addButton(withTitle: "Reset")
+        alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/usr/bin/tccutil")
+        proc.arguments = ["reset", "Accessibility", "com.justin.vox"]
+        proc.standardOutput = Pipe()
+        proc.standardError = Pipe()
+        try? proc.run()
+        proc.waitUntilExit()
+        NSLog("Vox: TCC reset done (exit=\(proc.terminationStatus))")
+
+        let done = NSAlert()
+        done.messageText = "Accessibility permission reset"
+        done.informativeText = "Quit and relaunch Vox to be re-prompted."
+        done.runModal()
     }
 
     // MARK: - Config
@@ -137,56 +143,18 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
         menu.addItem(NSMenuItem.separator())
         menu.addItem(NSMenuItem(title: "Settings...", action: #selector(openSettings), keyEquivalent: ","))
+        menu.addItem(NSMenuItem(title: "Repair Permissions...", action: #selector(repairAccessibility), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: "Quit", action: #selector(quit), keyEquivalent: "q"))
         statusItem.menu = menu
     }
 
-    /// Monochrome template microphone icon for the menubar
+    /// Monochrome template microphone icon for the menubar — uses SF Symbols for system-native alignment.
     private func makeMenuBarIcon() -> NSImage {
-        let size = NSSize(width: 16, height: 18)
-        let image = NSImage(size: size, flipped: false) { rect in
-            NSColor.black.setFill()
-            NSColor.black.setStroke()
-
-            let cx = rect.width / 2
-
-            // Mic capsule
-            let micW: CGFloat = 5.5
-            let micH: CGFloat = 8.0
-            let micBottom: CGFloat = 8.5
-            let micRect = NSRect(x: cx - micW / 2, y: micBottom, width: micW, height: micH)
-            NSBezierPath(roundedRect: micRect, xRadius: micW / 2, yRadius: micW / 2).fill()
-
-            // Cradle U-arc
-            let cradle = NSBezierPath()
-            cradle.lineWidth = 1.3
-            cradle.lineCapStyle = .round
-            let cradleR: CGFloat = 5.0
-            let cradleCenterY: CGFloat = 10.5
-            cradle.appendArc(
-                withCenter: NSPoint(x: cx, y: cradleCenterY),
-                radius: cradleR, startAngle: 150, endAngle: 30, clockwise: false
-            )
-            cradle.stroke()
-
-            // Stand
-            let standTop = cradleCenterY - cradleR
-            let standBottom: CGFloat = 2.5
-            let stand = NSBezierPath()
-            stand.lineWidth = 1.3; stand.lineCapStyle = .round
-            stand.move(to: NSPoint(x: cx, y: standTop))
-            stand.line(to: NSPoint(x: cx, y: standBottom))
-            stand.stroke()
-
-            // Base
-            let base = NSBezierPath()
-            base.lineWidth = 1.3; base.lineCapStyle = .round
-            base.move(to: NSPoint(x: cx - 3, y: standBottom))
-            base.line(to: NSPoint(x: cx + 3, y: standBottom))
-            base.stroke()
-
-            return true
-        }
+        let config = NSImage.SymbolConfiguration(pointSize: 15, weight: .regular)
+        let image = NSImage(systemSymbolName: "mic.fill", accessibilityDescription: "Vox")?
+            .withSymbolConfiguration(config)
+            ?? NSImage(systemSymbolName: "mic", accessibilityDescription: "Vox")
+            ?? NSImage()
         image.isTemplate = true
         return image
     }

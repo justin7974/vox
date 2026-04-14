@@ -15,8 +15,20 @@ class AudioService {
     var onAudioLevel: ((Float) -> Void)?
 
     func startRecording() {
-        let timestamp = Int(Date().timeIntervalSince1970)
-        let url = URL(fileURLWithPath: "/tmp/vox-\(timestamp).wav")
+        // Re-entry guard: if a previous recording is still active, stop it without backup
+        if audioRecorder != nil || meteringTimer != nil {
+            log.debug("startRecording called while active — cleaning up previous session")
+            meteringTimer?.invalidate()
+            meteringTimer = nil
+            audioRecorder?.stop()
+            audioRecorder = nil
+        }
+
+        // Millisecond + UUID suffix to avoid collisions when user triggers multiple recordings within
+        // the same second (e.g. after quick cancel + retry, or on fast hotkey double-taps).
+        let timestampMs = Int(Date().timeIntervalSince1970 * 1000)
+        let suffix = UUID().uuidString.prefix(8)
+        let url = URL(fileURLWithPath: "/tmp/vox-\(timestampMs)-\(suffix).wav")
         currentURL = url
         peakPower = -160.0
 
@@ -87,8 +99,9 @@ class AudioService {
     @discardableResult
     private func saveBackup(audioURL: URL) -> URL? {
         ensureBackupDir()
-        let timestamp = Int(Date().timeIntervalSince1970)
-        let dest = URL(fileURLWithPath: "\(backupDir)/vox-\(timestamp).wav")
+        let timestampMs = Int(Date().timeIntervalSince1970 * 1000)
+        let suffix = UUID().uuidString.prefix(8)
+        let dest = URL(fileURLWithPath: "\(backupDir)/vox-\(timestampMs)-\(suffix).wav")
         do {
             try FileManager.default.copyItem(at: audioURL, to: dest)
             log.debug("Audio backed up → \(dest.lastPathComponent)")
