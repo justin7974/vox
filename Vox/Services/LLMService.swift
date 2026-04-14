@@ -339,6 +339,28 @@ class LLMService {
         case openai
     }
 
+    /// One-off call to an explicitly named provider (bypasses the globally selected
+    /// provider). Used for features like Dictionary scan that may want a stronger
+    /// model than the everyday post-processing provider. Returns nil on config miss
+    /// or empty response — caller decides fallback behavior.
+    func completeWithNamedProvider(_ providerName: String, userMessage: String, systemPrompt: String) async -> String? {
+        guard let pc = config.llmProviderConfig(for: providerName) else {
+            log.debug("completeWithNamedProvider: no config for '\(providerName)'")
+            return nil
+        }
+        let format = LLMService.detectFormat(baseURL: pc.baseURL, explicit: pc.format)
+        let provider: LLMProvider
+        switch format {
+        case .anthropic:
+            provider = AnthropicProvider(baseURL: pc.baseURL, apiKey: pc.apiKey, model: pc.model)
+        case .openai:
+            provider = OpenAIProvider(baseURL: pc.baseURL, apiKey: pc.apiKey, model: pc.model)
+        }
+        log.debug("completeWithNamedProvider: using '\(providerName)' (\(provider.name), model=\(pc.model))")
+        let result = await provider.complete(userMessage: userMessage, systemPrompt: systemPrompt)
+        return result.isEmpty ? nil : result
+    }
+
     private static func detectFormat(baseURL: String, explicit: String?) -> APIFormat {
         if let explicit = explicit {
             if explicit == "openai" { return .openai }

@@ -106,6 +106,17 @@ final class ConfigService {
 
     var userContext: String? { raw["userContext"] as? String }
 
+    /// Enumerate provider names configured in config.json (any top-level dict
+    /// that has both `baseURL` and `model` — excludes ASR-only entries like qwen-asr).
+    var availableLLMProviders: [String] {
+        raw.compactMap { (key, value) -> String? in
+            guard let dict = value as? [String: Any],
+                  dict["baseURL"] is String,
+                  dict["model"] is String else { return nil }
+            return key
+        }.sorted()
+    }
+
     // MARK: - History
 
     var historyEnabled: Bool {
