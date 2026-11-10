@@ -9,14 +9,13 @@ class PasteService {
     /// Transcription" works even for users with history disabled.
     private(set) var lastPastedText: String?
 
-    func paste(text: String) {
+    func paste(text: String, beforePaste: (() -> Bool)? = nil, completion: ((Bool) -> Void)? = nil) {
         log.debug("paste called, length=\(text.count)")
-        lastPastedText = text
 
         // Always use clipboard + Cmd+V — most universal method
         // AXValue looks good on paper but Electron apps (Claude, VS Code, Slack etc.)
         // report success while silently dropping the text
-        pasteViaClipboard(text: text)
+        pasteViaClipboard(text: text, beforePaste: beforePaste, completion: completion)
     }
 
     // MARK: - Direct AXValue injection (unused, kept for reference)
@@ -72,38 +71,32 @@ class PasteService {
 
     // MARK: - Clipboard + Cmd+V via CGEvent
 
-    private func pasteViaClipboard(text: String) {
-        // Leave the transcribed text in the clipboard after paste — this is the safety net
-        // if the target app fails to consume Cmd+V (Electron apps, lost focus, etc.). The user
-        // can always manually Cmd+V. Overwriting with the previous clipboard raced the target
-        // app's paste handling and caused dictated text to vanish entirely.
-        let pasteboard = NSPasteboard.general
-        pasteboard.clearContents()
-        pasteboard.setString(text, forType: .string)
-
-        DispatchQueue.global(qos: .userInitiated).asyncAfter(deadline: .now() + 0.05) { [log] in
+    private func pasteViaClipboard(text: String, beforePaste: (() -> Bool)?, completion: ((Bool) -> Void)?) {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [self] in
+            // Revalidate on the main thread at dispatch time, after any focus/selection change.
+            guard beforePaste?() ?? true else { completion?(false); return }
+            lastPastedText = text
+            let pasteboard = NSPasteboard.general
+            pasteboard.clearContents()
+            pasteboard.setString(text, forType: .string)
             let source = CGEventSource(stateID: .hidSystemState)
-            if let keyDown = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: true),
-               let keyUp = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: false) {
-                keyDown.flags = .maskCommand
-                keyUp.flags = .maskCommand
-                keyDown.post(tap: .cghidEventTap)
-                Thread.sleep(forTimeInterval: 0.02)
-                keyUp.post(tap: .cghidEventTap)
-                log.debug("CGEvent Cmd+V sent")
+            if let down = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: true),
+               let up = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: false) {
+                down.flags = .maskCommand
+                up.flags = .maskCommand
+                down.post(tap: .cghidEventTap)
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) {
+                    up.post(tap: .cghidEventTap)
+                    completion?(true)
+                } // dispatched, not proof that the target application consumed it
+            } else if beforePaste != nil {
+                // Do not spawn a delayed fallback for a replacement whose selection can go stale.
+                completion?(false)
             } else {
-                log.debug("CGEvent failed, trying osascript fallback...")
-                let process = Process()
-                process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
-                process.arguments = ["-e", "tell application \"System Events\" to keystroke \"v\" using command down"]
-                process.standardOutput = Pipe()
-                process.standardError = Pipe()
-                do {
-                    try process.run()
-                    process.waitUntilExit()
-                    log.debug("osascript exit=\(process.terminationStatus)")
-                } catch {
-                    log.debug("osascript failed: \(error)")
+                Task {
+                    let result = await ProcessRunner.run(executable: "/usr/bin/osascript",
+                        arguments: ["-e", "tell application \"System Events\" to keystroke \"v\" using command down"], timeout: 5)
+                    await MainActor.run { completion?(result.status == 0 && !result.stopped) }
                 }
             }
         }

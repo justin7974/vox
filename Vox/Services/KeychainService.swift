@@ -41,6 +41,7 @@ enum KeychainService {
         // Try update first; fall back to add.
         let update = SecItemUpdate(base as CFDictionary, [kSecValueData as String: data] as CFDictionary)
         if update == errSecSuccess { return true }
+        guard update == errSecItemNotFound else { return false }
 
         var add = base
         add[kSecValueData as String] = data

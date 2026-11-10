@@ -18,11 +18,17 @@ import Foundation
 ///     Aliases A→B and B→C with input containing A produce B (not C).
 ///   - Non-overlapping ranges: longer aliases win; ties resolved by file order.
 ///   - Only invoked from normal dictation path (not translate / edit / custom).
-final class AliasService {
+// Mutable error state is locked; document data is fresh, immutable per read.
+final class AliasService: @unchecked Sendable {
     static let shared = AliasService()
 
-    private let log = LogService.shared
-    private let dictDir = NSHomeDirectory() + "/.vox"
+    private let dictDir: String
+    private let errorLock = NSLock()
+    private var error: String?
+    private(set) var lastError: String? {
+        get { errorLock.lock(); defer { errorLock.unlock() }; return error }
+        set { errorLock.lock(); defer { errorLock.unlock() }; error = newValue }
+    }
     var aliasPath: String { dictDir + "/aliases.json" }
 
     /// Conservative default seed (per @鹰眼 review). Only phrase-level entries
@@ -40,7 +46,7 @@ final class AliasService {
     """
 
     enum MatchMode: String, Codable {
-        case word        // Latin word-boundary (\b...\b)
+        case word        // ASCII Latin token boundary; CJK adjacency is permitted
         case substring   // exact substring (CJK or any)
         case regex       // user-supplied regex
     }
@@ -50,13 +56,18 @@ final class AliasService {
         var to: String
         var matchMode: MatchMode
         var caseSensitive: Bool
+        var sourceDocument: Data? = nil
+        var sourceRow: Int? = nil
 
         static func make(from: String, to: String, matchMode: MatchMode = .word, caseSensitive: Bool = false) -> Alias {
             Alias(from: from, to: to, matchMode: matchMode, caseSensitive: caseSensitive)
         }
     }
 
-    private init() {
+    private convenience init() { self.init(directory: NSHomeDirectory() + "/.vox") }
+
+    init(directory: String) {
+        dictDir = directory
         ensureFileExists()
     }
 
@@ -65,23 +76,33 @@ final class AliasService {
     /// Fresh-read every call (mirror DictionaryService — file is small, manual
     /// edits take effect without restart).
     var aliases: [Alias] {
-        guard let data = FileManager.default.contents(atPath: aliasPath),
-              let raw = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+        do {
+            let (data, rows) = try readDocument()
+            lastError = nil
+            return rows.enumerated().compactMap { index, row in
+                guard let dict = row as? [String: Any], var alias = Self.decode(dict) else { return nil }
+                alias.sourceDocument = data
+                alias.sourceRow = index
+                return alias
+            }
+        } catch {
+            lastError = "aliases.json is unreadable or invalid. Fix its JSON before saving; the file has been preserved."
             return []
         }
-        return raw.compactMap { dict in
-            guard let from = (dict["from"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
-                  !from.isEmpty,
-                  let to = dict["to"] as? String else {
-                return nil
-            }
-            // Skip no-op
-            if from == to { return nil }
-            let modeStr = (dict["matchMode"] as? String) ?? "word"
-            let mode = MatchMode(rawValue: modeStr) ?? .word
-            let caseSensitive = (dict["caseSensitive"] as? Bool) ?? false
-            return Alias(from: from, to: to, matchMode: mode, caseSensitive: caseSensitive)
-        }
+    }
+
+    private static func decode(_ dict: [String: Any]) -> Alias? {
+        guard let from = (dict["from"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !from.isEmpty, let to = dict["to"] as? String, from != to,
+              let mode = MatchMode(rawValue: dict["matchMode"] as? String ?? "word"),
+              dict["caseSensitive"] == nil || dict["caseSensitive"] is Bool else { return nil }
+        return Alias(from: from, to: to, matchMode: mode, caseSensitive: dict["caseSensitive"] as? Bool ?? false)
+    }
+
+    private func readDocument() throws -> (Data, [Any]) {
+        let data = try Data(contentsOf: URL(fileURLWithPath: aliasPath))
+        guard let rows = try JSONSerialization.jsonObject(with: data) as? [Any] else { throw CocoaError(.fileReadCorruptFile) }
+        return (data, rows)
     }
 
     // MARK: - Apply (core engine)
@@ -118,10 +139,13 @@ final class AliasService {
         let nsText = text as NSString
         let fullRange = NSRange(location: 0, length: nsText.length)
 
+        let deadline = ProcessInfo.processInfo.systemUptime + 0.25
         for entry in sorted {
+            if ProcessInfo.processInfo.systemUptime > deadline { return text }
             let alias = entry.alias
             let foundRanges = findRanges(of: alias, in: text, fullRange: fullRange)
             for r in foundRanges {
+                if ProcessInfo.processInfo.systemUptime > deadline { return text }
                 if !overlapsAny(r, claimed: matches.map { $0.range }) {
                     matches.append(Match(range: r, replacement: alias.to))
                 }
@@ -155,7 +179,7 @@ final class AliasService {
     private static func findWordBoundaryRanges(from: String, in text: String, caseSensitive: Bool) -> [NSRange] {
         // Escape regex metacharacters in `from`, then wrap with \b...\b.
         let escaped = NSRegularExpression.escapedPattern(for: from)
-        let pattern = "\\b\(escaped)\\b"
+        let pattern = "(?<![A-Za-z0-9_])\(escaped)(?![A-Za-z0-9_])"
         return findRegexRanges(pattern: pattern, in: text, caseSensitive: caseSensitive)
     }
 
@@ -175,6 +199,7 @@ final class AliasService {
     }
 
     private static func findRegexRanges(pattern: String, in text: String, caseSensitive: Bool) -> [NSRange] {
+        guard pattern.utf8.count <= 4096 else { return [] }
         var options: NSRegularExpression.Options = []
         if !caseSensitive { options.insert(.caseInsensitive) }
         guard let regex = try? NSRegularExpression(pattern: pattern, options: options) else {
@@ -183,7 +208,19 @@ final class AliasService {
         }
         let nsText = text as NSString
         let fullRange = NSRange(location: 0, length: nsText.length)
-        return regex.matches(in: text, options: [], range: fullRange).map { $0.range }
+        let deadline = ProcessInfo.processInfo.systemUptime + 0.025
+        var ranges: [NSRange] = []
+        var aborted = false
+        // reportProgress lets ICU interrupt catastrophic backtracking, even before a match.
+        regex.enumerateMatches(in: text, options: [.reportProgress], range: fullRange) { result, flags, stop in
+            if flags.contains(.internalError) || ProcessInfo.processInfo.systemUptime > deadline {
+                aborted = true
+                stop.pointee = true
+            } else if let range = result?.range, range.location != NSNotFound, range.length > 0 {
+                ranges.append(range)
+            }
+        }
+        return aborted ? [] : ranges
     }
 
     private static func overlapsAny(_ range: NSRange, claimed: [NSRange]) -> Bool {
@@ -199,79 +236,81 @@ final class AliasService {
     // MARK: - Mutations (used by Settings UI)
 
     @discardableResult
-    func addAlias(_ alias: Alias) -> Bool {
-        let trimmedFrom = alias.from.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmedFrom.isEmpty, trimmedFrom != alias.to else { return false }
-        var current = aliases
-        // Dedupe by (from, matchMode) case-insensitive when caseSensitive=false
-        let exists = current.contains { existing in
-            existing.matchMode == alias.matchMode &&
-                existing.from.compare(trimmedFrom, options: alias.caseSensitive ? [] : [.caseInsensitive]) == .orderedSame
-        }
-        if exists { return false }
-        var normalized = alias
-        normalized.from = trimmedFrom
-        current.append(normalized)
-        writeAliases(current)
-        return true
-    }
-
-    func removeAlias(at index: Int) {
-        var current = aliases
-        guard index >= 0 && index < current.count else { return }
-        current.remove(at: index)
-        writeAliases(current)
-    }
+    func addAlias(_ alias: Alias) -> Bool { mutate(expected: nil, replacement: alias) }
 
     @discardableResult
-    func updateAlias(at index: Int, to alias: Alias) -> Bool {
-        let trimmedFrom = alias.from.trimmingCharacters(in: .whitespacesAndNewlines)
-        var current = aliases
-        guard !trimmedFrom.isEmpty, trimmedFrom != alias.to,
-              index >= 0 && index < current.count else { return false }
-        // Allow keeping same `from` at this index; only conflict if another row matches
-        let conflict = current.enumerated().contains { (offset, existing) in
-            offset != index &&
-                existing.matchMode == alias.matchMode &&
-                existing.from.compare(trimmedFrom, options: alias.caseSensitive ? [] : [.caseInsensitive]) == .orderedSame
+    func removeAlias(_ expected: Alias) -> Bool { mutate(expected: expected, replacement: nil) }
+
+    @discardableResult
+    func updateAlias(_ expected: Alias, to alias: Alias) -> Bool { mutate(expected: expected, replacement: alias) }
+
+    private func mutate(expected: Alias?, replacement: Alias?) -> Bool {
+        do {
+            let (original, document) = try readDocument()
+            var rows = document
+            var index: Int? = nil
+            if let expected = expected {
+                guard expected.sourceDocument == original, let row = expected.sourceRow, rows.indices.contains(row) else {
+                    lastError = "The file changed since this row was loaded. Reload and try again."
+                    return false
+                }
+                index = row
+            }
+            if var alias = replacement {
+                alias.from = alias.from.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !alias.from.isEmpty, alias.from != alias.to else {
+                    lastError = "From must be nonempty and different from To."
+                    return false
+                }
+                if alias.matchMode == .regex, alias.from.utf8.count > 4096 || (try? NSRegularExpression(pattern: alias.from)) == nil {
+                    lastError = "The regular expression is invalid."
+                    return false
+                }
+                let conflict = rows.enumerated().contains { offset, row in
+                    guard offset != index, let dict = row as? [String: Any], let other = Self.decode(dict) else { return false }
+                    return other.matchMode == alias.matchMode && other.from.compare(alias.from, options: (!alias.caseSensitive || !other.caseSensitive) ? [.caseInsensitive] : []) == .orderedSame
+                }
+                guard !conflict else { lastError = "This alias conflicts with an existing rule."; return false }
+                var dict = index.flatMap { rows[$0] as? [String: Any] } ?? [:]
+                dict.merge(["from": alias.from, "to": alias.to, "matchMode": alias.matchMode.rawValue, "caseSensitive": alias.caseSensitive]) { _, new in new }
+                if let i = index { rows[i] = dict } else { rows.append(dict) }
+            } else if let i = index { rows.remove(at: i) }
+            return try writeDocument(rows, original: original)
+        } catch {
+            lastError = "Cannot save aliases.json. Check its JSON and permissions; the original file was preserved."
+            return false
         }
-        if conflict { return false }
-        var normalized = alias
-        normalized.from = trimmedFrom
-        current[index] = normalized
-        writeAliases(current)
-        return true
     }
 
-    private func writeAliases(_ list: [Alias]) {
-        do {
-            try FileManager.default.createDirectory(atPath: dictDir, withIntermediateDirectories: true)
-            let raw: [[String: Any]] = list.map { a in
-                [
-                    "from": a.from,
-                    "to": a.to,
-                    "matchMode": a.matchMode.rawValue,
-                    "caseSensitive": a.caseSensitive,
-                ]
-            }
-            let data = try JSONSerialization.data(withJSONObject: raw, options: [.prettyPrinted])
-            try data.write(to: URL(fileURLWithPath: aliasPath), options: .atomic)
-        } catch {
-            log.debug("AliasService write failed: \(error.localizedDescription)")
+    private func writeDocument(_ rows: [Any], original: Data) throws -> Bool {
+        let url = URL(fileURLWithPath: aliasPath)
+        let data = try JSONSerialization.data(withJSONObject: rows, options: [.prettyPrinted, .sortedKeys])
+        // Detect a manual edit between fresh read and mutation instead of rewriting a stale view.
+        guard try Data(contentsOf: url) == original else {
+            lastError = "The file changed while saving. Reload and try again."
+            return false
         }
+        try JSONBackupStore.backup(original, directory: URL(fileURLWithPath: dictDir), prefix: "aliases-backup-")
+        guard try Data(contentsOf: url) == original else { throw CocoaError(.fileWriteUnknown) }
+        try JSONBackupStore.atomicWrite(data, to: url)
+        lastError = nil
+        return true
     }
 
     private func ensureFileExists() {
         if FileManager.default.fileExists(atPath: aliasPath) { return }
-        try? FileManager.default.createDirectory(atPath: dictDir, withIntermediateDirectories: true)
-        try? AliasService.seedContent.write(toFile: aliasPath, atomically: true, encoding: .utf8)
-        log.debug("Seeded aliases.json at \(aliasPath)")
+        do {
+            try FileManager.default.createDirectory(atPath: dictDir, withIntermediateDirectories: true)
+            try AliasService.seedContent.write(toFile: aliasPath, atomically: true, encoding: .utf8)
+        } catch { lastError = "Could not create aliases.json." }
     }
 
-    /// Overwrite aliases.json with the bundled default seed.
-    func resetToDefaults() {
-        try? FileManager.default.createDirectory(atPath: dictDir, withIntermediateDirectories: true)
-        try? AliasService.seedContent.write(toFile: aliasPath, atomically: true, encoding: .utf8)
-        log.debug("Reset aliases.json to defaults")
+    @discardableResult
+    func resetToDefaults() -> Bool {
+        do {
+            let (original, _) = try readDocument()
+            let rows = try JSONSerialization.jsonObject(with: Data(Self.seedContent.utf8)) as! [Any]
+            return try writeDocument(rows, original: original)
+        } catch { lastError = "Cannot reset malformed aliases.json. Fix its JSON first."; return false }
     }
 }

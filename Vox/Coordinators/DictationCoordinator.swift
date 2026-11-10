@@ -15,7 +15,7 @@ class DictationCoordinator {
 
     // Edit window state
     private var lastInsertedText: String?
-    private var lastInsertedLength: Int = 0
+    private var insertionAnchor: InsertedTextAnchor?
     private var editWindowTimer: Timer?
     private var keyEventMonitor: Any?
     private var localKeyEventMonitor: Any?
@@ -164,7 +164,7 @@ class DictationCoordinator {
 
             self.log.debug("Step 1: Transcribe start (file: \(audioURL.lastPathComponent))")
             let rawText = await self.stt.transcribe(audioFile: audioURL)
-            self.log.debug("Step 1: Transcribe result: [\(rawText)]")
+            self.log.debug("Step 1: Transcribe result: characters=\(rawText.count)")
 
             guard !rawText.isEmpty else {
                 self.log.debug("Step 1: Empty result, aborting")
@@ -182,7 +182,7 @@ class DictationCoordinator {
             }
 
             let contextHint = await contextTask.value
-            self.log.debug("Step 2: LLM start (context: \(contextHint ?? "none"), translate: \(isTranslate))")
+            self.log.debug("Step 2: LLM start (context present: \(contextHint != nil), translate: \(isTranslate))")
             // Translate mode must not fall back to raw text — we already aborted above if LLM missing.
             let cleanText = await self.llm.process(rawText: rawText, contextHint: contextHint, translateMode: isTranslate, requireLLM: isTranslate, applyAliases: !isTranslate)
 
@@ -197,7 +197,7 @@ class DictationCoordinator {
             }
 
             let postProcessed = cleanText.isEmpty ? rawText : cleanText
-            self.log.debug("Step 2: LLM result: [\(postProcessed)]")
+            self.log.debug("Step 2: LLM result: characters=\(postProcessed.count)")
 
             let finalText: String
             if self.llm.isConfigured {
@@ -205,12 +205,14 @@ class DictationCoordinator {
                 self.log.debug("Step 3: Skipped TextFormatter (LLM active)")
             } else {
                 finalText = TextFormatter.format(postProcessed)
-                self.log.debug("Step 3: TextFormatter applied: [\(finalText)]")
+                self.log.debug("Step 3: TextFormatter applied: characters=\(finalText.count)")
             }
 
             self.log.debug("Step 4: Pasting...")
             await MainActor.run {
                 self.sm.transition(to: .pasting)
+                let wantsEdit = !isTranslate && self.config.editWindowEnabled && self.config.editWindowDuration > 0
+                self.insertionAnchor = wantsEdit ? InsertedTextAnchor.capture(text: finalText) : nil
                 self.paste.paste(text: finalText)
                 self.log.debug("Step 4: Paste done")
 
@@ -221,9 +223,8 @@ class DictationCoordinator {
                 }
 
                 // Enter edit window if enabled (not for translate mode)
-                if !isTranslate && self.config.editWindowEnabled && self.config.editWindowDuration > 0 {
+                if wantsEdit && self.insertionAnchor != nil {
                     self.lastInsertedText = finalText
-                    self.lastInsertedLength = finalText.count
                     self.enterEditWindow()
                 } else {
                     self.sm.transition(to: .idle)
@@ -268,7 +269,7 @@ class DictationCoordinator {
             overlay.hide()
         }
         lastInsertedText = nil
-        lastInsertedLength = 0
+        insertionAnchor = nil
     }
 
     private func cancelEditWindowCleanup() {
@@ -290,7 +291,11 @@ class DictationCoordinator {
         cancelEditWindowCleanup()
 
         // Select last inserted text via Accessibility API
-        selectLastInsertedText()
+        guard insertionAnchor?.select() == true else {
+            expireEditWindow()
+            AppDelegate.showNotification(title: "Vox", message: "The insertion or focus changed. Edit was cancelled without replacing text.")
+            return
+        }
 
         guard sm.transition(to: .recording) else { return }
         isInEditMode = true
@@ -334,7 +339,7 @@ class DictationCoordinator {
 
             // Step 1: Transcribe the edit instruction
             let editInstruction = await self.stt.transcribe(audioFile: audioURL)
-            self.log.debug("Edit instruction: [\(editInstruction)]")
+            self.log.debug("Edit instruction: characters=\(editInstruction.count)")
 
             guard !editInstruction.isEmpty else {
                 self.log.debug("Edit: empty instruction, aborting")
@@ -354,7 +359,7 @@ class DictationCoordinator {
 
             let userMessage = "原文：\(originalText)\n\n修改指令：\(editInstruction)"
             let editedText = await self.llm.process(rawText: userMessage, customSystemPrompt: LLMService.editPrompt, requireLLM: true)
-            self.log.debug("Edit result: [\(editedText)]")
+            self.log.debug("Edit result: characters=\(editedText.count)")
 
             guard !editedText.isEmpty else {
                 // LLM failed/unavailable — must abort rather than paste the "原文+指令" prompt back into the input.
@@ -372,73 +377,19 @@ class DictationCoordinator {
             // Step 3: Paste edited text (replaces AX selection)
             await MainActor.run {
                 self.sm.transition(to: .pasting)
-                self.paste.paste(text: editedText)
-
-                self.history.addRecord(text: editedText, originalText: originalText)
-
-                self.sm.transition(to: .idle)
-                self.overlay.showSuccess("✓ 已修改")
-                NSSound(named: "Glass")?.play()
-
-                self.isInEditMode = false
-                self.lastInsertedText = nil
-                self.lastInsertedLength = 0
+                self.paste.paste(text: editedText, beforePaste: { self.insertionAnchor?.selectionIsValid() == true }) { dispatched in
+                    if dispatched { self.history.addRecord(text: editedText, originalText: originalText) }
+                    else { AppDelegate.showNotification(title: "Vox", message: "Edit cancelled: focus, selection or original text changed.") }
+                    self.sm.transition(to: .idle)
+                    if dispatched { self.overlay.showSuccess("✓ 已修改") } else { self.overlay.hide() }
+                    self.isInEditMode = false
+                    self.lastInsertedText = nil
+                    self.insertionAnchor = nil
+                }
             }
 
             try? FileManager.default.removeItem(at: audioURL)
         }
     }
 
-    // MARK: - Accessibility Helpers
-
-    private func selectLastInsertedText() {
-        guard lastInsertedLength > 0 else { return }
-        guard let app = NSWorkspace.shared.frontmostApplication else {
-            log.debug("Edit: no frontmost app")
-            return
-        }
-
-        let appRef = AXUIElementCreateApplication(app.processIdentifier)
-
-        var focusedRef: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(appRef, kAXFocusedUIElementAttribute as CFString, &focusedRef) == .success else {
-            log.debug("Edit: cannot get focused element")
-            return
-        }
-
-        let element = focusedRef as! AXUIElement
-
-        // Get total character count
-        var totalChars: Int = 0
-        var numRef: CFTypeRef?
-        if AXUIElementCopyAttributeValue(element, kAXNumberOfCharactersAttribute as CFString, &numRef) == .success,
-           let n = numRef as? Int {
-            totalChars = n
-        } else {
-            // Fallback: read full text value
-            var valueRef: CFTypeRef?
-            guard AXUIElementCopyAttributeValue(element, kAXValueAttribute as CFString, &valueRef) == .success,
-                  let text = valueRef as? String else {
-                log.debug("Edit: cannot determine text length")
-                return
-            }
-            totalChars = text.count
-        }
-
-        let start = max(0, totalChars - lastInsertedLength)
-        let length = min(lastInsertedLength, totalChars)
-        var range = CFRange(location: start, length: length)
-
-        guard let rangeValue = AXValueCreate(.cfRange, &range) else {
-            log.debug("Edit: cannot create AXValue for range")
-            return
-        }
-
-        let result = AXUIElementSetAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, rangeValue)
-        if result == .success {
-            log.debug("Edit: selected \(length) chars at offset \(start)")
-        } else {
-            log.debug("Edit: selection failed (status: \(result.rawValue))")
-        }
-    }
 }

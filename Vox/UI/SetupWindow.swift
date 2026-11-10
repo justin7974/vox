@@ -1230,11 +1230,11 @@ class SetupWindow: NSObject, NSWindowDelegate {
         }
 
         configStatusLabel.stringValue = ""
-        saveConfig()
+        guard saveConfig() else { return false }
         return true
     }
 
-    private func saveConfig() {
+    private func saveConfig() -> Bool {
         // Safety net: always read latest values from recorder
         if let recorder = hotkeyRecorder {
             selectedKeyCode = recorder.keyCode
@@ -1276,7 +1276,7 @@ class SetupWindow: NSObject, NSWindowDelegate {
                 }
             }
         }
-        if !qwenKey.isEmpty {
+        if !qwenKey.isEmpty || asrProvider.configKey == "qwen" {
             config["qwen-asr"] = ["apiKey": qwenKey]
         }
 
@@ -1303,6 +1303,8 @@ class SetupWindow: NSObject, NSWindowDelegate {
             "modelPath": whisperModel
         ]
 
+        config["provider"] = llmProvider.configKey
+
         // Save current LLM key.
         // qwen-llm shares ASR key only when ASR is actually Qwen — otherwise read the visible LLM key field.
         if llmProvider.configKey != "none" {
@@ -1316,7 +1318,7 @@ class SetupWindow: NSObject, NSWindowDelegate {
 
         // Write all built-in provider keys
         for p in SetupWindow.llmProviders where p.configKey != "none" && p.configKey != "custom-llm" {
-            if let key = llmKeys[p.configKey], !key.isEmpty {
+            if let key = llmKeys[p.configKey], !key.isEmpty || p.configKey == llmProvider.configKey {
                 config[p.configKey] = [
                     "baseURL": p.baseURL,
                     "apiKey": key,
@@ -1359,14 +1361,9 @@ class SetupWindow: NSObject, NSWindowDelegate {
             }
         }
 
-        let configDir = NSHomeDirectory() + "/.vox"
-        try? FileManager.default.createDirectory(atPath: configDir, withIntermediateDirectories: true)
-
-        if let jsonData = try? JSONSerialization.data(withJSONObject: config, options: [.prettyPrinted, .sortedKeys]) {
-            try? jsonData.write(to: URL(fileURLWithPath: configPath))
-            ConfigService.shared.reload()  // sync in-memory raw dict with file
-            NSLog("Vox: Config saved")
-        }
+        // A single transaction routes secrets to Keychain before persisting sanitized JSON.
+        // It also preserves unknown existing settings and refuses malformed source JSON.
+        return ConfigService.shared.write(values: config)
     }
 
     // MARK: - Config: Load & Apply

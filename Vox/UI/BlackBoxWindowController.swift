@@ -174,7 +174,16 @@ class BlackBoxWindowController: NSObject, NSWindowDelegate, NSTableViewDataSourc
                 return
             }
 
-            let cleanText = await LLMService.shared.process(rawText: rawText, contextHint: contextHint, translateMode: isTranslate, applyAliases: !isTranslate)
+            let cleanText = await LLMService.shared.process(rawText: rawText, contextHint: contextHint, translateMode: isTranslate, requireLLM: isTranslate, applyAliases: !isTranslate)
+            if isTranslate && cleanText.isEmpty {
+                await MainActor.run {
+                    sender.image = origImage
+                    sender.contentTintColor = origTint
+                    sender.isEnabled = true
+                    AppDelegate.showNotification(title: "Black Box", message: "Translation failed. No text was pasted.")
+                }
+                return
+            }
             let finalText = cleanText.isEmpty ? rawText : cleanText
 
             await MainActor.run {

@@ -122,14 +122,14 @@ final class AliasSettingsVC: NSObject {
 
     private func reload() {
         aliases = svc.aliases
-        countLabel.stringValue = "\(aliases.count) alias\(aliases.count == 1 ? "" : "es")"
+        countLabel.stringValue = svc.lastError ?? "\(aliases.count) alias\(aliases.count == 1 ? "" : "es")"
         aliasesTableView.reloadData()
     }
 
     @objc private func addAliasTapped() {
         guard let edited = runEditDialog(initial: nil, title: "Add Alias") else { return }
         if !svc.addAlias(edited) {
-            showInfo("Alias already exists or is invalid (from is empty or equals to).")
+            showInfo(svc.lastError ?? "Cannot save alias.")
             return
         }
         reload()
@@ -143,8 +143,8 @@ final class AliasSettingsVC: NSObject {
         }
         let current = aliases[row]
         guard let edited = runEditDialog(initial: current, title: "Edit Alias") else { return }
-        if !svc.updateAlias(at: row, to: edited) {
-            showInfo("Cannot save: from is empty, equals to, or conflicts with another row.")
+        if !svc.updateAlias(current, to: edited) {
+            showInfo(svc.lastError ?? "Cannot save alias.")
             return
         }
         reload()
@@ -153,7 +153,7 @@ final class AliasSettingsVC: NSObject {
     @objc private func removeAliasTapped() {
         let row = aliasesTableView.selectedRow
         guard row >= 0 && row < aliases.count else { return }
-        svc.removeAlias(at: row)
+        if !svc.removeAlias(aliases[row]) { showInfo(svc.lastError ?? "Cannot remove alias.") }
         reload()
     }
 
@@ -169,7 +169,7 @@ final class AliasSettingsVC: NSObject {
         alert.addButton(withTitle: "Reset")
         alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
-        svc.resetToDefaults()
+        if !svc.resetToDefaults() { showInfo(svc.lastError ?? "Cannot reset aliases.") }
         reload()
     }
 

@@ -254,29 +254,28 @@ class VoiceSettingsVC: NSObject {
         guard idx >= 0 && idx < SetupWindow.asrProviders.count else { return }
         let provider = SetupWindow.asrProviders[idx]
 
-        config.write(key: "asr", value: provider.configKey)
+        var values: [String: Any] = ["asr": provider.configKey]
 
         switch provider.configKey {
         case "qwen":
             let key = asrKeyField.stringValue.trimmingCharacters(in: .whitespaces)
-            if !key.isEmpty {
-                config.write(key: "qwen-asr", value: ["apiKey": key])
-            }
+            values["qwen-asr"] = ["apiKey": key]
         case "custom":
             let base = asrBaseURLField.stringValue.trimmingCharacters(in: .whitespaces)
             let key = asrKeyField.stringValue.trimmingCharacters(in: .whitespaces)
             let model = asrModelField.stringValue.trimmingCharacters(in: .whitespaces)
-            config.write(key: "custom-asr", value: [
+            values["custom-asr"] = [
                 "baseURL": base, "apiKey": key, "model": model,
-            ])
+            ]
         case "whisper":
             let exec = whisperExecField.stringValue.trimmingCharacters(in: .whitespaces)
             let model = whisperModelField.stringValue.trimmingCharacters(in: .whitespaces)
-            config.write(key: "whisper", value: ["executablePath": exec, "modelPath": model])
+            values["whisper"] = ["executablePath": exec, "modelPath": model]
         default:
             break
         }
 
+        guard config.write(values: values) else { return }
         config.reload()
         NSLog("Vox: ASR config saved — provider: \(provider.configKey)")
     }
@@ -351,7 +350,6 @@ class VoiceSettingsVC: NSObject {
         if provider.configKey == "none" {
             config.write(key: "provider", value: "none")
         } else {
-            config.write(key: "provider", value: provider.configKey)
 
             let key = llmKeyField.stringValue.trimmingCharacters(in: .whitespaces)
             let baseURL = provider.configKey == "custom-llm"
@@ -370,7 +368,7 @@ class VoiceSettingsVC: NSObject {
                 "model": model,
             ]
             cfgDict["format"] = format
-            config.write(key: provider.configKey, value: cfgDict)
+            guard config.write(values: ["provider": provider.configKey, provider.configKey: cfgDict]) else { return }
         }
 
         config.reload()

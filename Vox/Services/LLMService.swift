@@ -1,5 +1,26 @@
 import Foundation
 
+// Reject explicit truncation/filter markers; compatible providers may omit/extend finish markers.
+enum LLMResponse {
+    static func outputBudget(for text: String) -> Int { min(8192, max(2048, text.utf8.count + 512)) }
+    static func timeout(for text: String) -> TimeInterval { min(180, max(30, Double(outputBudget(for: text)) / 50)) }
+
+    static func text(from data: Data, format: String) -> String {
+        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any], json["error"] == nil else { return "" }
+        let text: String
+        if format == "anthropic" {
+            guard !["length", "max_tokens", "content_filter"].contains(json["stop_reason"] as? String ?? ""), let content = json["content"] as? [[String: Any]] else { return "" }
+            text = content.filter { $0["type"] as? String == "text" }.compactMap { $0["text"] as? String }.joined()
+        } else {
+            guard let choice = (json["choices"] as? [[String: Any]])?.first,
+                  !["length", "max_tokens", "content_filter"].contains(choice["finish_reason"] as? String ?? ""),
+                  let message = choice["message"] as? [String: Any], let value = message["content"] as? String else { return "" }
+            text = value
+        }
+        return text.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+}
+
 // MARK: - Protocol
 
 protocol LLMProvider {
@@ -15,29 +36,31 @@ struct AnthropicProvider: LLMProvider {
     private let baseURL: String
     private let apiKey: String
     private let model: String
+    private let session: URLSession
 
-    init(baseURL: String, apiKey: String, model: String) {
+    init(baseURL: String, apiKey: String, model: String, session: URLSession = .shared) {
         self.baseURL = baseURL
         self.apiKey = apiKey
         self.model = model
+        self.session = session
     }
 
     func complete(userMessage: String, systemPrompt: String) async -> String {
         guard let url = URL(string: baseURL) else {
-            log.debug("Invalid API URL: \(baseURL)")
+            log.debug("Invalid API URL")
             return ""
         }
 
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
-        request.timeoutInterval = 30
+        request.timeoutInterval = LLMResponse.timeout(for: userMessage)
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue(apiKey, forHTTPHeaderField: "x-api-key")
         request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
 
         let body: [String: Any] = [
             "model": model,
-            "max_tokens": 2048,
+            "max_tokens": LLMResponse.outputBudget(for: userMessage),
             "system": systemPrompt,
             "messages": [
                 ["role": "user", "content": userMessage]
@@ -52,45 +75,20 @@ struct AnthropicProvider: LLMProvider {
 
         let data: Data
         do {
-            let (responseData, response) = try await URLSession.shared.data(for: request)
+            let (responseData, response) = try await session.data(for: request)
             data = responseData
             if let httpResponse = response as? HTTPURLResponse {
                 log.debug("Anthropic API HTTP status: \(httpResponse.statusCode)")
+                guard (200..<300).contains(httpResponse.statusCode) else { return "" }
             }
         } catch {
-            log.debug("Anthropic API error: \(error.localizedDescription)")
+            log.debug("Anthropic API error: \((error as NSError).code)")
             return ""
         }
 
-        let rawResponse = String(data: data, encoding: .utf8) ?? "???"
-        log.debug("Anthropic API raw response: \(String(rawResponse.prefix(500)))")
-
-        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            log.debug("Failed to parse JSON")
-            return ""
-        }
-
-        if let errorInfo = json["error"] as? [String: Any],
-           let message = errorInfo["message"] as? String {
-            log.debug("Anthropic API returned error: \(message)")
-            return ""
-        }
-
-        if let content = json["content"] as? [[String: Any]] {
-            // Find the "text" type block (skip "thinking" blocks from providers like MiniMax)
-            let textBlock = content.first(where: { ($0["type"] as? String) == "text" }) ?? content.first
-            if let text = textBlock?["text"] as? String {
-                let result = text.trimmingCharacters(in: .whitespacesAndNewlines)
-                log.debug("Anthropic API result: [\(result)]")
-                return result
-            } else {
-                log.debug("Could not extract text from Anthropic content blocks")
-                return ""
-            }
-        } else {
-            log.debug("Could not extract content array from Anthropic response")
-            return ""
-        }
+        let result = LLMResponse.text(from: data, format: "anthropic")
+        log.debug("LLM response bytes=\(data.count), accepted characters=\(result.count)")
+        return result
     }
 }
 
@@ -102,28 +100,30 @@ struct OpenAIProvider: LLMProvider {
     private let baseURL: String
     private let apiKey: String
     private let model: String
+    private let session: URLSession
 
-    init(baseURL: String, apiKey: String, model: String) {
+    init(baseURL: String, apiKey: String, model: String, session: URLSession = .shared) {
         self.baseURL = baseURL
         self.apiKey = apiKey
         self.model = model
+        self.session = session
     }
 
     func complete(userMessage: String, systemPrompt: String) async -> String {
         guard let url = URL(string: baseURL) else {
-            log.debug("Invalid API URL: \(baseURL)")
+            log.debug("Invalid API URL")
             return ""
         }
 
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
-        request.timeoutInterval = 30
+        request.timeoutInterval = LLMResponse.timeout(for: userMessage)
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("Bearer \(apiKey)", forHTTPHeaderField: "Authorization")
 
         var body: [String: Any] = [
             "model": model,
-            "max_tokens": 2048,
+            "max_tokens": LLMResponse.outputBudget(for: userMessage),
             "messages": [
                 ["role": "system", "content": systemPrompt],
                 ["role": "user", "content": userMessage]
@@ -143,40 +143,20 @@ struct OpenAIProvider: LLMProvider {
 
         let data: Data
         do {
-            let (responseData, response) = try await URLSession.shared.data(for: request)
+            let (responseData, response) = try await session.data(for: request)
             data = responseData
             if let httpResponse = response as? HTTPURLResponse {
                 log.debug("OpenAI API HTTP status: \(httpResponse.statusCode)")
+                guard (200..<300).contains(httpResponse.statusCode) else { return "" }
             }
         } catch {
-            log.debug("OpenAI API error: \(error.localizedDescription)")
+            log.debug("OpenAI API error: \((error as NSError).code)")
             return ""
         }
 
-        let rawResponse = String(data: data, encoding: .utf8) ?? "???"
-        log.debug("OpenAI API raw response: \(String(rawResponse.prefix(500)))")
-
-        guard let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any] else {
-            log.debug("Failed to parse JSON")
-            return ""
-        }
-
-        if let errorInfo = json["error"] as? [String: Any],
-           let message = errorInfo["message"] as? String {
-            log.debug("OpenAI API returned error: \(message)")
-            return ""
-        }
-
-        if let choices = json["choices"] as? [[String: Any]],
-           let message = choices.first?["message"] as? [String: Any],
-           let text = message["content"] as? String {
-            let result = text.trimmingCharacters(in: .whitespacesAndNewlines)
-            log.debug("OpenAI API result: [\(result)]")
-            return result
-        } else {
-            log.debug("Could not extract choices[0].message.content from OpenAI response")
-            return ""
-        }
+        let result = LLMResponse.text(from: data, format: "openai")
+        log.debug("LLM response bytes=\(data.count), accepted characters=\(result.count)")
+        return result
     }
 }
 
@@ -472,7 +452,7 @@ class LLMService {
 
         log.debug("Using LLM provider: \(p.name), translate: \(translateMode)")
         if let hint = contextHint {
-            log.debug("Context hint: \(hint)")
+            log.debug("Context hint characters: \(hint.count)")
         }
 
         let systemPrompt = customSystemPrompt ?? buildSystemPrompt(contextHint: contextHint, translateMode: translateMode)

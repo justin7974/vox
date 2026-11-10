@@ -1,6 +1,6 @@
 // test-alias.swift — Standalone test runner for AliasService logic.
 //
-// Run: swiftc scripts/test-alias.swift Vox/Services/AliasService.swift Vox/Services/LogService.swift -o /tmp/test-alias && /tmp/test-alias
+// Run: swiftc scripts/test-alias.swift Vox/Services/{AliasService,JSONBackupStore}.swift -o /tmp/test-alias && /tmp/test-alias
 //
 // Covers (per @鹰眼 spec v2 review):
 //   - word-boundary, substring, regex match modes

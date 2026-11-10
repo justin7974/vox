@@ -244,8 +244,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         UNUserNotificationCenter.current().add(request)
     }
 
+    func applicationWillTerminate(_ notification: Notification) {
+        ProcessRunner.cancelAll()
+    }
+
     @objc private func quit() {
         dictation.cancelIfRecording()
+        ProcessRunner.cancelAll()
         NSApplication.shared.terminate(nil)
     }
 }
