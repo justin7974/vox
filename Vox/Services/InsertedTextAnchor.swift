@@ -25,6 +25,7 @@ struct InsertedTextRange {
 
 final class InsertedTextAnchor {
     enum CaptureFailure: String, Error {
+        case permissionDenied = "ax_permission_denied"
         case valueUnavailable = "ax_value_unavailable"
         case selectionUnavailable = "ax_selection_unavailable"
         case timeout = "ax_timeout"
@@ -38,6 +39,7 @@ final class InsertedTextAnchor {
         var focused: (pid_t) -> Result<AXUIElement, CaptureFailure>
         var value: (AXUIElement) -> Result<String, CaptureFailure>
         var selection: (AXUIElement) -> Result<NSRange, CaptureFailure>
+        var trusted: () -> Bool = { AXIsProcessTrusted() }
 
         static var live: CaptureAccess {
             CaptureAccess(frontmostPID: { NSWorkspace.shared.frontmostApplication?.processIdentifier },
@@ -60,6 +62,7 @@ final class InsertedTextAnchor {
     static func capture(text: String, access: CaptureAccess = .live,
                         onFailure: (CaptureFailure) -> Void = { _ in }) -> InsertedTextAnchor? {
         do {
+            guard access.trusted() else { throw CaptureFailure.permissionDenied }
             guard let pid = access.frontmostPID() else { throw CaptureFailure.focusChanged }
             let element = try access.focused(pid).get()
             let value = try access.value(element).get()
@@ -163,6 +166,7 @@ final class InsertedTextAnchor {
     static func readFailure(_ status: AXError, elapsed: TimeInterval, timeout: Float,
                             fallback: CaptureFailure) -> CaptureFailure {
         // cannotComplete also means an unresponsive/dead app; do not label an immediate error as timeout.
-        status == .cannotComplete && elapsed >= Double(timeout) * 0.95 ? .timeout : fallback
+        if status == .apiDisabled { return .permissionDenied }
+        return status == .cannotComplete && elapsed >= Double(timeout) * 0.95 ? .timeout : fallback
     }
 }

@@ -9,3 +9,5 @@ swiftc scripts/task325/{EditCoordinator,CoordinatorDoubles}.swift Vox/Services/I
 "$TEST_TMP/coordinator"
 swiftc scripts/task325/{BaselineBehavior,CoordinatorDoubles,AnchorDouble}.swift Vox/Coordinators/DictationCoordinator.swift Vox/Core/{VoxPhase,VoxError}.swift Vox/Utilities/TextFormatter.swift -framework Cocoa -o "$TEST_TMP/behavior"
 "$TEST_TMP/behavior"
+swiftc scripts/task325/{IncrementBehavior,CoordinatorDoubles,AnchorDouble}.swift Vox/Coordinators/DictationCoordinator.swift Vox/Core/{VoxPhase,VoxError}.swift Vox/Utilities/TextFormatter.swift -framework Cocoa -o "$TEST_TMP/increment"
+"$TEST_TMP/increment"

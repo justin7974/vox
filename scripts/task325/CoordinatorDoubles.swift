@@ -1,6 +1,11 @@
 import Cocoa
 
 // No real UI, microphone, HTTP, clipboard, Keychain, input events or user configuration.
+struct FixtureApplication { let bundleIdentifier: String?; let processIdentifier: pid_t }
+final class NSWorkspace {
+    static let shared = NSWorkspace()
+    var frontmostApplication: FixtureApplication? = FixtureApplication(bundleIdentifier: "fixture-app-a", processIdentifier: 42)
+}
 final class NSSound { init?(named: String) {} ; func play() {} }
 final class NSEvent {
     struct EventTypeMask { static let keyDown = EventTypeMask() }

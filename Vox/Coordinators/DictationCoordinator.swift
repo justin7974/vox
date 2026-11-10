@@ -21,12 +21,19 @@ class DictationCoordinator {
     private var localKeyEventMonitor: Any?
     private var isInEditMode: Bool = false
 
+    private var unsupportedEditNoticeApps: Set<String> = []
+    private var permissionNoticeShown = false
+    private let applicationKey: () -> String
     private let captureInsertion: (String, (InsertedTextAnchor.CaptureFailure) -> Void) -> InsertedTextAnchor?
 
     init(captureInsertion: @escaping (String, (InsertedTextAnchor.CaptureFailure) -> Void) -> InsertedTextAnchor? = {
         InsertedTextAnchor.capture(text: $0, onFailure: $1)
+    }, applicationKey: @escaping () -> String = {
+        guard let app = NSWorkspace.shared.frontmostApplication else { return "unknown" }
+        return app.bundleIdentifier ?? "pid:\(app.processIdentifier)"
     }) {
         self.captureInsertion = captureInsertion
+        self.applicationKey = applicationKey
     }
 
     /// Called when setup wizard needs to be shown (no config)
@@ -220,21 +227,27 @@ class DictationCoordinator {
             await MainActor.run {
                 self.sm.transition(to: .pasting)
                 let wantsEdit = !isTranslate && self.config.editWindowEnabled && self.config.editWindowDuration > 0
+                let editApplication = wantsEdit ? self.applicationKey() : nil
+                var captureFailure: InsertedTextAnchor.CaptureFailure?
                 self.insertionAnchor = wantsEdit ? self.captureInsertion(finalText, { reason in
+                    captureFailure = reason
                     self.log.debug("Edit capture failed: reason=\(reason.rawValue)")
                 }) : nil
                 self.paste.paste(text: finalText, completion: { dispatched in
                     self.log.debug("Step 4: Paste dispatched=\(dispatched)")
-                    guard dispatched else {
-                        self.insertionAnchor = nil
-                        self.sm.transition(to: .idle)
-                        self.overlay.hide()
-                        return
-                    }
+                    // Keep the recoverable dictation even when dispatch failed.
                     if isTranslate {
                         self.history.addRecord(text: finalText, originalText: rawText, isTranslation: true)
                     } else {
                         self.history.addRecord(text: finalText)
+                    }
+                    guard dispatched else {
+                        self.insertionAnchor = nil
+                        self.sm.transition(to: .idle)
+                        if captureFailure == .permissionDenied {
+                            self.showEditCaptureFailure(captureFailure, application: editApplication)
+                        } else { self.overlay.hide() }
+                        return
                     }
 
                     // Start the full countdown only after Cmd+V was dispatched and released.
@@ -243,7 +256,7 @@ class DictationCoordinator {
                         self.enterEditWindow()
                     } else {
                         self.sm.transition(to: .idle)
-                        if wantsEdit { self.overlay.showSuccess("此应用暂不支持修改", autoDismissAfter: 3) }
+                        if wantsEdit { self.showEditCaptureFailure(captureFailure, application: editApplication) }
                         else { self.overlay.show(phase: self.sm.phase) }
                     }
                     NSSound(named: "Glass")?.play()
@@ -255,6 +268,17 @@ class DictationCoordinator {
     }
 
     // MARK: - Edit Window
+
+    private func showEditCaptureFailure(_ reason: InsertedTextAnchor.CaptureFailure?, application: String?) {
+        if reason == .permissionDenied {
+            if !permissionNoticeShown {
+                permissionNoticeShown = true
+                overlay.showSuccess("请在系统设置 → 隐私与安全性 → 辅助功能中授权 Vox", autoDismissAfter: 6)
+            } else { overlay.hide() }
+        } else if let app = application, unsupportedEditNoticeApps.insert(app).inserted {
+            overlay.showSuccess("此应用暂不支持修改", autoDismissAfter: 3)
+        } else { overlay.hide() }
+    }
 
     private func enterEditWindow() {
         let duration = config.editWindowDuration

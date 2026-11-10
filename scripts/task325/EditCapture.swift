@@ -10,7 +10,7 @@ import Cocoa
         let element = AXUIElementCreateApplication(999999)
         func reads() -> InsertedTextAnchor.CaptureAccess {
             .init(frontmostPID: { 42 }, focused: { _ in .success(element) },
-                  value: { _ in .success("start end") }, selection: { _ in .success(NSRange(location: 6, length: 0)) })
+                  value: { _ in .success("start end") }, selection: { _ in .success(NSRange(location: 6, length: 0)) }, trusted: { true })
         }
         var failures: [InsertedTextAnchor.CaptureFailure] = []
         check(InsertedTextAnchor.capture(text: "🙂", access: reads(), onFailure: { failures.append($0) }) != nil,
@@ -26,6 +26,15 @@ import Cocoa
             check(failures == [reason], "failure preserves exact fixed reason code")
         }
         var access = reads()
+        access.trusted = { false }
+        access.focused = { _ in fatalError("untrusted capture must not query AX") }
+        failures = []
+        check(InsertedTextAnchor.capture(text: "text", access: access, onFailure: { failures.append($0) }) == nil,
+              "untrusted process fails before any AX query")
+        check(failures == [.permissionDenied], "permission failure is distinct from unsupported app")
+        check(InsertedTextAnchor.readFailure(.apiDisabled, elapsed: 0, timeout: 1, fallback: .valueUnavailable) == .permissionDenied,
+              "API disabled maps to permission failure")
+        access = reads()
         var pidReads = 0
         access.frontmostPID = { pidReads += 1; return pidReads == 1 ? 42 : 43 }
         failures = []

@@ -23,7 +23,8 @@ import Cocoa
     }
     @MainActor static func main() async {
         reset()
-        let failed = DictationCoordinator(captureInsertion: { _, fail in fail(.valueUnavailable); return nil })
+        var appKey = "app-a"
+        let failed = DictationCoordinator(captureInsertion: { _, fail in fail(.valueUnavailable); return nil }, applicationKey: { appKey })
         await pastePending(failed)
         check(StatusOverlay.windows == 0 && StatusOverlay.successes.isEmpty, "no edit window before paste dispatch")
         check(HistoryService.records == 0, "dispatch not prematurely counted as pasted")
@@ -33,11 +34,22 @@ import Cocoa
         check(LogService.messages.contains("Edit capture failed: reason=ax_value_unavailable"), "failure reason logged without input")
         check(!LogService.messages.contains(where: { $0.contains("fixture output") }), "failure log omits dictated content")
         check(HistoryService.records == 1, "successful normal paste still records history")
+        await pastePending(failed)
+        PasteService.complete(true)
+        check(StatusOverlay.successes.count == 1, "same app is notified only once per run")
+        appKey = "app-b"
+        await pastePending(failed)
+        PasteService.complete(true)
+        check(StatusOverlay.successes.count == 2, "different app gets its own first notice")
+        appKey = "app-a"
+        await pastePending(failed)
+        PasteService.complete(true)
+        check(StatusOverlay.successes.count == 2, "returning to first app stays suppressed")
 
         reset()
         let element = AXUIElementCreateApplication(999999)
         let access = InsertedTextAnchor.CaptureAccess(frontmostPID: { 42 }, focused: { _ in .success(element) },
-                                                     value: { _ in .success("") }, selection: { _ in .success(NSRange(location: 0, length: 0)) })
+                                                     value: { _ in .success("") }, selection: { _ in .success(NSRange(location: 0, length: 0)) }, trusted: { true })
         let success = DictationCoordinator(captureInsertion: { text, fail in InsertedTextAnchor.capture(text: text, access: access, onFailure: fail) })
         await pastePending(success)
         check(StatusOverlay.windows == 0 && NSEvent.global == nil, "keyboard monitor not armed before paste dispatch")
@@ -55,8 +67,23 @@ import Cocoa
         let undispatched = DictationCoordinator(captureInsertion: { _, _ in nil })
         await pastePending(undispatched)
         PasteService.complete(false)
-        check(HistoryService.records == 0 && StatusOverlay.windows == 0, "failed dispatch does not start edit or write history")
+        check(HistoryService.records == 1 && StatusOverlay.windows == 0, "failed dispatch retains history without starting edit")
         check(StatusOverlay.successes.isEmpty, "failed paste does not claim unsupported capture success")
+        reset()
+        var reason = InsertedTextAnchor.CaptureFailure.permissionDenied
+        let permissions = DictationCoordinator(captureInsertion: { _, fail in fail(reason); return nil }, applicationKey: { "app-a" })
+        await pastePending(permissions)
+        PasteService.complete(false)
+        check(HistoryService.records == 1, "failed dispatch with missing permission still keeps history")
+        check(StatusOverlay.successes.count == 1 && StatusOverlay.successes[0].contains("辅助功能中授权 Vox"), "permission failure gives authorization guidance even if dispatch fails")
+        check(!StatusOverlay.successes.contains("此应用暂不支持修改"), "missing permission never claims unsupported app")
+        await pastePending(permissions)
+        PasteService.complete(true)
+        check(StatusOverlay.successes.count == 1, "permission guidance is shown once per run")
+        reason = .valueUnavailable
+        await pastePending(permissions)
+        PasteService.complete(true)
+        check(StatusOverlay.successes.last == "此应用暂不支持修改", "permission recovery leaves app notice independently available")
         print("PASS: \(checks) real coordinator checks with isolated service/UI/event doubles")
     }
 }
