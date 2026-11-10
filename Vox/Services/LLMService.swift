@@ -441,7 +441,23 @@ class LLMService {
     /// - Parameter requireLLM: when true, returns "" on failure/missing config so caller can abort
     ///   (used by edit/translate modes where rawText fallback is destructive or misleading).
     ///   When false (default, normal dictation), falls back to rawText on failure.
-    func process(rawText: String, contextHint: String? = nil, translateMode: Bool = false, customSystemPrompt: String? = nil, requireLLM: Bool = false) async -> String {
+    /// - Parameter applyAliases: when true, runs `AliasService` pre-LLM substitution
+    ///   on `rawText` (deterministic ASR-homophone correction). Default false: callers
+    ///   must explicitly opt in. Only the normal dictation path should pass true;
+    ///   translate / edit / setup-test / custom-prompt paths must preserve user input.
+    func process(rawText: String, contextHint: String? = nil, translateMode: Bool = false, customSystemPrompt: String? = nil, requireLLM: Bool = false, applyAliases: Bool = false) async -> String {
+        // Pre-LLM alias substitution. Runs BEFORE provider guard so the
+        // deterministic fix lands even when LLM is unconfigured or fails.
+        let aliasedText: String
+        if applyAliases {
+            aliasedText = AliasService.shared.apply(rawText)
+            if aliasedText != rawText {
+                log.debug("Alias service: rewrote input")
+            }
+        } else {
+            aliasedText = rawText
+        }
+
         guard let p = provider else {
             if requireLLM {
                 log.debug("LLM required but not configured, aborting")
@@ -451,7 +467,7 @@ class LLMService {
                 return ""
             }
             log.debug("No LLM config, skipping post-processing")
-            return rawText
+            return aliasedText
         }
 
         log.debug("Using LLM provider: \(p.name), translate: \(translateMode)")
@@ -460,7 +476,7 @@ class LLMService {
         }
 
         let systemPrompt = customSystemPrompt ?? buildSystemPrompt(contextHint: contextHint, translateMode: translateMode)
-        let result = await p.complete(userMessage: rawText, systemPrompt: systemPrompt)
+        let result = await p.complete(userMessage: aliasedText, systemPrompt: systemPrompt)
 
         if result.isEmpty {
             if requireLLM {
@@ -470,11 +486,11 @@ class LLMService {
                 }
                 return ""
             }
-            log.debug("LLM failed, returning raw text")
+            log.debug("LLM failed, returning aliased raw text")
             DispatchQueue.main.async {
                 AppDelegate.showNotification(title: "Vox", message: "LLM post-processing failed. Using raw transcription.")
             }
-            return rawText
+            return aliasedText
         }
         return result
     }

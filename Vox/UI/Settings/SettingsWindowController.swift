@@ -24,6 +24,7 @@ class SettingsWindowController: NSObject, NSWindowDelegate {
         Tab(id: "general", title: "General", icon: "gearshape"),
         Tab(id: "voice", title: "Voice", icon: "waveform"),
         Tab(id: "dictionary", title: "Dictionary", icon: "character.book.closed"),
+        Tab(id: "aliases", title: "Aliases", icon: "arrow.left.arrow.right"),
         Tab(id: "history", title: "History", icon: "clock.arrow.circlepath"),
         Tab(id: "about", title: "About", icon: "info.circle"),
     ]
@@ -179,6 +180,10 @@ class SettingsWindowController: NSObject, NSWindowDelegate {
             return vc.view
         case "dictionary":
             let vc = DictionarySettingsVC()
+            tabControllers[tabId] = vc
+            return vc.view
+        case "aliases":
+            let vc = AliasSettingsVC()
             tabControllers[tabId] = vc
             return vc.view
         case "history":

@@ -174,7 +174,7 @@ class BlackBoxWindowController: NSObject, NSWindowDelegate, NSTableViewDataSourc
                 return
             }
 
-            let cleanText = await LLMService.shared.process(rawText: rawText, contextHint: contextHint, translateMode: isTranslate)
+            let cleanText = await LLMService.shared.process(rawText: rawText, contextHint: contextHint, translateMode: isTranslate, applyAliases: !isTranslate)
             let finalText = cleanText.isEmpty ? rawText : cleanText
 
             await MainActor.run {

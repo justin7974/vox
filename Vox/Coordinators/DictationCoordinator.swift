@@ -184,7 +184,7 @@ class DictationCoordinator {
             let contextHint = await contextTask.value
             self.log.debug("Step 2: LLM start (context: \(contextHint ?? "none"), translate: \(isTranslate))")
             // Translate mode must not fall back to raw text — we already aborted above if LLM missing.
-            let cleanText = await self.llm.process(rawText: rawText, contextHint: contextHint, translateMode: isTranslate, requireLLM: isTranslate)
+            let cleanText = await self.llm.process(rawText: rawText, contextHint: contextHint, translateMode: isTranslate, requireLLM: isTranslate, applyAliases: !isTranslate)
 
             if isTranslate && cleanText.isEmpty {
                 self.log.debug("Translate: LLM returned empty, aborting")
