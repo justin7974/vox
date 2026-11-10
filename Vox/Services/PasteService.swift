@@ -18,6 +18,12 @@ class PasteService {
         pasteViaClipboard(text: text, beforePaste: beforePaste, completion: completion)
     }
 
+    // Identify only our synthetic paste events, never ignore the user's physical Cmd+V.
+    static let pasteEventMarker: Int64 = 0x564f585041535445
+    static func isOwnPasteEvent(_ event: NSEvent) -> Bool {
+        event.cgEvent?.getIntegerValueField(.eventSourceUserData) == pasteEventMarker
+    }
+
     // MARK: - Direct AXValue injection (unused, kept for reference)
 
     private func insertViaAccessibility(text: String) -> Bool {
@@ -84,6 +90,8 @@ class PasteService {
                let up = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: false) {
                 down.flags = .maskCommand
                 up.flags = .maskCommand
+                down.setIntegerValueField(.eventSourceUserData, value: Self.pasteEventMarker)
+                up.setIntegerValueField(.eventSourceUserData, value: Self.pasteEventMarker)
                 down.post(tap: .cghidEventTap)
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) {
                     up.post(tap: .cghidEventTap)

@@ -21,6 +21,14 @@ class DictationCoordinator {
     private var localKeyEventMonitor: Any?
     private var isInEditMode: Bool = false
 
+    private let captureInsertion: (String, (InsertedTextAnchor.CaptureFailure) -> Void) -> InsertedTextAnchor?
+
+    init(captureInsertion: @escaping (String, (InsertedTextAnchor.CaptureFailure) -> Void) -> InsertedTextAnchor? = {
+        InsertedTextAnchor.capture(text: $0, onFailure: $1)
+    }) {
+        self.captureInsertion = captureInsertion
+    }
+
     /// Called when setup wizard needs to be shown (no config)
     var onNeedsSetup: (() -> Void)?
 
@@ -212,26 +220,34 @@ class DictationCoordinator {
             await MainActor.run {
                 self.sm.transition(to: .pasting)
                 let wantsEdit = !isTranslate && self.config.editWindowEnabled && self.config.editWindowDuration > 0
-                self.insertionAnchor = wantsEdit ? InsertedTextAnchor.capture(text: finalText) : nil
-                self.paste.paste(text: finalText)
-                self.log.debug("Step 4: Paste done")
+                self.insertionAnchor = wantsEdit ? self.captureInsertion(finalText, { reason in
+                    self.log.debug("Edit capture failed: reason=\(reason.rawValue)")
+                }) : nil
+                self.paste.paste(text: finalText, completion: { dispatched in
+                    self.log.debug("Step 4: Paste dispatched=\(dispatched)")
+                    guard dispatched else {
+                        self.insertionAnchor = nil
+                        self.sm.transition(to: .idle)
+                        self.overlay.hide()
+                        return
+                    }
+                    if isTranslate {
+                        self.history.addRecord(text: finalText, originalText: rawText, isTranslation: true)
+                    } else {
+                        self.history.addRecord(text: finalText)
+                    }
 
-                if isTranslate {
-                    self.history.addRecord(text: finalText, originalText: rawText, isTranslation: true)
-                } else {
-                    self.history.addRecord(text: finalText)
-                }
-
-                // Enter edit window if enabled (not for translate mode)
-                if wantsEdit && self.insertionAnchor != nil {
-                    self.lastInsertedText = finalText
-                    self.enterEditWindow()
-                } else {
-                    self.sm.transition(to: .idle)
-                    self.overlay.show(phase: self.sm.phase)
-                }
-
-                NSSound(named: "Glass")?.play()
+                    // Start the full countdown only after Cmd+V was dispatched and released.
+                    if wantsEdit && self.insertionAnchor != nil {
+                        self.lastInsertedText = finalText
+                        self.enterEditWindow()
+                    } else {
+                        self.sm.transition(to: .idle)
+                        if wantsEdit { self.overlay.showSuccess("此应用暂不支持修改", autoDismissAfter: 3) }
+                        else { self.overlay.show(phase: self.sm.phase) }
+                    }
+                    NSSound(named: "Glass")?.play()
+                })
             }
 
             try? FileManager.default.removeItem(at: audioURL)
@@ -251,12 +267,12 @@ class DictationCoordinator {
 
         // Any other keyboard input cancels the edit window.
         // Global monitor fires when other apps are frontmost; local monitor fires when Vox itself is frontmost.
-        keyEventMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] _ in
-            guard let self = self, self.sm.phase == .editWindow else { return }
+        keyEventMonitor = NSEvent.addGlobalMonitorForEvents(matching: .keyDown) { [weak self] event in
+            guard !PasteService.isOwnPasteEvent(event), let self = self, self.sm.phase == .editWindow else { return }
             self.expireEditWindow()
         }
         localKeyEventMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak self] event in
-            guard let self = self, self.sm.phase == .editWindow else { return event }
+            guard !PasteService.isOwnPasteEvent(event), let self = self, self.sm.phase == .editWindow else { return event }
             self.expireEditWindow()
             return event
         }

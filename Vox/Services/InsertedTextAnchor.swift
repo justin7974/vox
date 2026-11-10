@@ -24,6 +24,29 @@ struct InsertedTextRange {
 }
 
 final class InsertedTextAnchor {
+    enum CaptureFailure: String, Error {
+        case valueUnavailable = "ax_value_unavailable"
+        case selectionUnavailable = "ax_selection_unavailable"
+        case timeout = "ax_timeout"
+        case focusChanged = "ax_focus_changed"
+        case invalidRange = "ax_invalid_range"
+    }
+
+    /// Injectable reads let tests cover failures without inspecting a real input field.
+    struct CaptureAccess {
+        var frontmostPID: () -> pid_t?
+        var focused: (pid_t) -> Result<AXUIElement, CaptureFailure>
+        var value: (AXUIElement) -> Result<String, CaptureFailure>
+        var selection: (AXUIElement) -> Result<NSRange, CaptureFailure>
+
+        static var live: CaptureAccess {
+            CaptureAccess(frontmostPID: { NSWorkspace.shared.frontmostApplication?.processIdentifier },
+                          focused: readFocusedElement,
+                          value: { readString($0, attribute: kAXValueAttribute) },
+                          selection: readSelectedRange)
+        }
+    }
+
     private let element: AXUIElement
     private let pid: pid_t
     private let insertion: InsertedTextRange
@@ -34,13 +57,26 @@ final class InsertedTextAnchor {
         self.insertion = insertion
     }
 
-    static func capture(text: String) -> InsertedTextAnchor? {
-        guard let app = NSWorkspace.shared.frontmostApplication,
-              let element = focusedElement(pid: app.processIdentifier),
-              let value = string(element, attribute: kAXValueAttribute),
-              let range = selectedRange(element),
-              let insertion = InsertedTextRange(value: value, selection: range, insertedText: text) else { return nil }
-        return InsertedTextAnchor(element: element, pid: app.processIdentifier, insertion: insertion)
+    static func capture(text: String, access: CaptureAccess = .live,
+                        onFailure: (CaptureFailure) -> Void = { _ in }) -> InsertedTextAnchor? {
+        do {
+            guard let pid = access.frontmostPID() else { throw CaptureFailure.focusChanged }
+            let element = try access.focused(pid).get()
+            let value = try access.value(element).get()
+            let range = try access.selection(element).get()
+            // Reading a large AX value can take time. Do not bind the old field after focus moved.
+            guard access.frontmostPID() == pid,
+                  CFEqual(element, try access.focused(pid).get()) else { throw CaptureFailure.focusChanged }
+            guard let insertion = InsertedTextRange(value: value, selection: range, insertedText: text) else {
+                throw CaptureFailure.invalidRange
+            }
+            return InsertedTextAnchor(element: element, pid: pid, insertion: insertion)
+        } catch let reason as CaptureFailure {
+            onFailure(reason)
+            return nil
+        } catch {
+            return nil
+        }
     }
 
     func select() -> Bool {
@@ -63,29 +99,70 @@ final class InsertedTextAnchor {
         return insertion.matches(value: value)
     }
 
-    private static func focusedElement(pid: pid_t) -> AXUIElement? {
+    static func readTimeout(attribute: String) -> Float {
+        attribute == kAXValueAttribute ? 1.0 : 0.25
+    }
+
+    private static func readFocusedElement(pid: pid_t) -> Result<AXUIElement, CaptureFailure> {
         var result: CFTypeRef?
         let appRef = AXUIElementCreateApplication(pid)
         AXUIElementSetMessagingTimeout(appRef, 0.25)
-        guard AXUIElementCopyAttributeValue(appRef, kAXFocusedUIElementAttribute as CFString, &result) == .success,
-              let result = result, CFGetTypeID(result) == AXUIElementGetTypeID() else { return nil }
+        let started = ProcessInfo.processInfo.systemUptime
+        let status = AXUIElementCopyAttributeValue(appRef, kAXFocusedUIElementAttribute as CFString, &result)
+        guard status == .success, let result = result, CFGetTypeID(result) == AXUIElementGetTypeID() else {
+            return .failure(readFailure(status, elapsed: ProcessInfo.processInfo.systemUptime - started,
+                                        timeout: 0.25, fallback: .focusChanged))
+        }
         let element = result as! AXUIElement
         AXUIElementSetMessagingTimeout(element, 0.25)
-        return element
+        return .success(element)
+    }
+
+    private static func focusedElement(pid: pid_t) -> AXUIElement? {
+        try? readFocusedElement(pid: pid).get()
+    }
+
+    private static func readString(_ element: AXUIElement, attribute: String) -> Result<String, CaptureFailure> {
+        let timeout = readTimeout(attribute: attribute)
+        AXUIElementSetMessagingTimeout(element, timeout)
+        defer { AXUIElementSetMessagingTimeout(element, 0.25) }
+        var result: CFTypeRef?
+        let started = ProcessInfo.processInfo.systemUptime
+        let status = AXUIElementCopyAttributeValue(element, attribute as CFString, &result)
+        guard status == .success, let text = result as? String else {
+            return .failure(readFailure(status, elapsed: ProcessInfo.processInfo.systemUptime - started,
+                                        timeout: timeout, fallback: .valueUnavailable))
+        }
+        return .success(text)
     }
 
     private static func string(_ element: AXUIElement, attribute: String) -> String? {
+        try? readString(element, attribute: attribute).get()
+    }
+
+    private static func readSelectedRange(_ element: AXUIElement) -> Result<NSRange, CaptureFailure> {
         var result: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(element, attribute as CFString, &result) == .success else { return nil }
-        return result as? String
+        AXUIElementSetMessagingTimeout(element, 0.25)
+        let started = ProcessInfo.processInfo.systemUptime
+        let status = AXUIElementCopyAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, &result)
+        guard status == .success, let result = result, CFGetTypeID(result) == AXValueGetTypeID() else {
+            return .failure(readFailure(status, elapsed: ProcessInfo.processInfo.systemUptime - started,
+                                        timeout: 0.25, fallback: .selectionUnavailable))
+        }
+        var range = CFRange()
+        guard AXValueGetValue(result as! AXValue, .cfRange, &range), range.location >= 0, range.length >= 0 else {
+            return .failure(.invalidRange)
+        }
+        return .success(NSRange(location: range.location, length: range.length))
     }
 
     private static func selectedRange(_ element: AXUIElement) -> NSRange? {
-        var result: CFTypeRef?
-        guard AXUIElementCopyAttributeValue(element, kAXSelectedTextRangeAttribute as CFString, &result) == .success,
-              let result = result, CFGetTypeID(result) == AXValueGetTypeID() else { return nil }
-        var range = CFRange()
-        guard AXValueGetValue(result as! AXValue, .cfRange, &range), range.location >= 0, range.length >= 0 else { return nil }
-        return NSRange(location: range.location, length: range.length)
+        try? readSelectedRange(element).get()
+    }
+
+    static func readFailure(_ status: AXError, elapsed: TimeInterval, timeout: Float,
+                            fallback: CaptureFailure) -> CaptureFailure {
+        // cannotComplete also means an unresponsive/dead app; do not label an immediate error as timeout.
+        status == .cannotComplete && elapsed >= Double(timeout) * 0.95 ? .timeout : fallback
     }
 }
