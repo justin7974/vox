@@ -7,6 +7,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusItem: NSStatusItem!
     private let hotkey = HotkeyService.shared
     private let dictation = DictationCoordinator()
+    private var dictionaryUpdater: DictionaryAutoUpdateService?
+    private var dictionaryUpdateTimer: Timer?
     private var setupWindow: SetupWindow?
     private var historyWindowController: HistoryWindowController?
     private var blackBoxWindowController: BlackBoxWindowController?
@@ -34,13 +36,41 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             NSLog("Vox: Accessibility permission needed for auto-paste. Granted via System Settings.")
         }
 
+        // Default click opens the specific failed backup, even after newer recordings.
+        let notifications = UNUserNotificationCenter.current()
+        notifications.delegate = self
+        notifications.setNotificationCategories([UNNotificationCategory(identifier: RetryRecordingRequest.category,
+            actions: [], intentIdentifiers: [], options: [])])
         // Request notification permission
-        UNUserNotificationCenter.current().requestAuthorization(options: [.alert]) { _, _ in }
+        notifications.requestAuthorization(options: [.alert]) { _, _ in }
+
+        startDictionaryUpdates()
 
         // First-run check: show setup if no config exists
         if !config.configExists {
             showSetup()
         }
+    }
+
+    // In-app checks gate local 03:00, daily attempts, config, history and Vox's busy state.
+    private func startDictionaryUpdates() {
+        Task { @MainActor [weak self] in self?.configureDictionaryUpdates() }
+    }
+
+    @MainActor private func configureDictionaryUpdates() {
+        dictionaryUpdater = DictionaryAutoUpdateService.makeDefault(isIdle: { [weak self] in
+            self?.dictation.isIdle == true
+        })
+        // Install on the synchronous main run loop, not an async task's run loop.
+        dictionaryUpdateTimer = Timer.scheduledTimer(timeInterval: 60, target: self,
+            selector: #selector(checkDictionaryUpdates(_:)), userInfo: nil, repeats: true)
+        NSWorkspace.shared.notificationCenter.addObserver(self, selector: #selector(checkDictionaryUpdates(_:)),
+            name: NSWorkspace.didWakeNotification, object: nil)
+        checkDictionaryUpdates(nil)
+    }
+
+    @objc private func checkDictionaryUpdates(_ sender: Any?) {
+        Task { @MainActor [weak self] in _ = await self?.dictionaryUpdater?.tick() }
     }
 
     // MARK: - TCC Permission Repair
@@ -139,6 +169,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         translateMenuItem = transItem
         menu.addItem(transItem)
 
+        menu.addItem(NSMenuItem(title: "重试上一段录音", action: #selector(retryLastRecording), keyEquivalent: ""))
+        menu.addItem(NSMenuItem(title: "重贴上一条", action: #selector(repasteLastText), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: "Black Box", action: #selector(openBlackBox), keyEquivalent: ""))
         menu.addItem(NSMenuItem(title: "Copy Last Transcription", action: #selector(copyLastTranscription), keyEquivalent: ""))
 
@@ -162,6 +194,13 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     // MARK: - Menu Actions
+
+    @objc private func retryLastRecording() { dictation.retryRecording() }
+    @objc private func repasteLastText() { dictation.repasteLastText() }
+
+    func reprocessAudio(at url: URL, completion: @escaping (Bool) -> Void) {
+        dictation.retryRecording(at: url, completion: completion)
+    }
 
     @objc private func openSettings() {
         SettingsWindowController.shared.show()
@@ -236,6 +275,20 @@ class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Notifications
 
+    static func showRetryNotification(audioURL: URL?, translateMode: Bool, fallbackAlreadyPasted: Bool = false) {
+        let content = UNMutableNotificationContent()
+        content.title = "Vox"
+        if let url = audioURL {
+            let retry = RetryRecordingRequest(audioURL: url, translateMode: translateMode)
+            content.body = RetryRecordingRequest.notificationBody(fallbackAlreadyPasted: fallbackAlreadyPasted)
+            content.categoryIdentifier = RetryRecordingRequest.category
+            content.userInfo = retry.userInfo
+        } else {
+            content.body = "这段没处理成功，音频备份不可用，请重新录音。"
+        }
+        UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil))
+    }
+
     static func showNotification(title: String, message: String) {
         let content = UNMutableNotificationContent()
         content.title = title
@@ -245,6 +298,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func applicationWillTerminate(_ notification: Notification) {
+        dictionaryUpdateTimer?.invalidate()
+        NSWorkspace.shared.notificationCenter.removeObserver(self)
         ProcessRunner.cancelAll()
     }
 
@@ -264,5 +319,29 @@ extension AppDelegate: HotkeyDelegate {
 
     func hotkeyReleased(mode: VoxMode) {
         dictation.hotkeyReleased(mode: hotkey.hotkeyMode)
+    }
+}
+
+// MARK: - Notification Recovery
+
+extension AppDelegate: UNUserNotificationCenterDelegate {
+    func userNotificationCenter(_ center: UNUserNotificationCenter, didReceive response: UNNotificationResponse,
+                                withCompletionHandler completionHandler: @escaping () -> Void) {
+        defer { completionHandler() }
+        guard response.actionIdentifier == UNNotificationDefaultActionIdentifier,
+              response.notification.request.content.categoryIdentifier == RetryRecordingRequest.category,
+              let request = RetryRecordingRequest(userInfo: response.notification.request.content.userInfo) else { return }
+        Task { @MainActor in
+            guard let url = request.resolve(in: AudioService.shared.getBackups().map { $0.url }) else {
+                Self.showNotification(title: "Vox", message: "这段录音备份已过期，请重新录音。")
+                return
+            }
+            self.dictation.retryRecording(at: url, translateMode: request.translateMode)
+        }
+    }
+
+    func userNotificationCenter(_ center: UNUserNotificationCenter, willPresent notification: UNNotification,
+                                withCompletionHandler completionHandler: @escaping (UNNotificationPresentationOptions) -> Void) {
+        completionHandler([.banner])
     }
 }

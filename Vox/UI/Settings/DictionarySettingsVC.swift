@@ -12,6 +12,9 @@ final class DictionarySettingsVC: NSObject {
     private let log = LogService.shared
 
     lazy var view: NSView = buildView()
+    private var automaticStatusLabel: NSTextField?
+
+    deinit { NotificationCenter.default.removeObserver(self) }
 
     // Terms table
     private var termsTableView: NSTableView!
@@ -76,6 +79,18 @@ final class DictionarySettingsVC: NSObject {
         stack.addArrangedSubview(termsBtnRow)
 
         stack.addArrangedSubview(SettingsUI.makeSeparator())
+
+        let automatic = NSButton(checkboxWithTitle: "每晚自动更新词库", target: self, action: #selector(automaticUpdateToggled(_:)))
+        automatic.state = ConfigService.shared.dictionaryAutoUpdateEnabled ? .on : .off
+        stack.addArrangedSubview(automatic)
+        let automaticStatus = SettingsUI.makeSublabel("")
+        automaticStatusLabel = automaticStatus
+        stack.addArrangedSubview(automaticStatus)
+        NotificationCenter.default.addObserver(self, selector: #selector(refreshAutomaticUpdateStatus(_:)),
+            name: DictionaryAutoUpdateService.statusDidChange, object: nil)
+        NotificationCenter.default.addObserver(self, selector: #selector(refreshAutomaticUpdateStatus(_:)),
+            name: NSApplication.didBecomeActiveNotification, object: nil)
+        refreshAutomaticUpdateStatus(nil)
 
         // === Section 2: Scan History for Suggestions ===
         stack.addArrangedSubview(SettingsUI.makeSectionTitle("Scan History for Suggestions"))
@@ -223,6 +238,36 @@ final class DictionarySettingsVC: NSObject {
         scroll.heightAnchor.constraint(equalToConstant: 200).isActive = true
 
         return scroll
+    }
+
+    @objc private func refreshAutomaticUpdateStatus(_ notification: Notification?) {
+        guard let label = automaticStatusLabel else { return }
+        var status = "本地 03:00 后空闲时扫描新增历史，每晚最多新增 10 条。"
+        do {
+            if let run = try DictionaryAutoUpdateService.readLastRun(directory: NSHomeDirectory() + "/.vox") {
+                let formatter = DateFormatter(); formatter.dateStyle = .short; formatter.timeStyle = .short
+                let descriptions: [DictionaryAutoUpdateService.ReasonCode: String] = [
+                    .completed: "完成", .recovered: "已核实上次写入（未重复写入）", .noNewHistory: "没有新增历史", .noProvider: "未配置模型",
+                    .deferredBusy: "前台忙，候选等待空闲", .deferredDisabled: "开关已关闭，候选保留",
+                    .dayChanged: "日期已变化，候选保留", .stateUnreadable: "状态文件无法读取",
+                    .dictionaryUnavailable: "词库无法读取", .aliasesUnavailable: "别名文件无法读取",
+                    .recoveryFailed: "上次写入待核对", .scanFailed: "模型扫描失败",
+                    .persistenceFailed: "状态保存失败", .writeFailed: "词库写入失败"
+                ]
+                status += "\n上次：\(formatter.string(from: run.timestamp))，新增 \(run.added) 条，\(run.failed ? "失败：" : "")\(descriptions[run.reasonCode] ?? run.reasonCode.rawValue)。"
+            } else { status += "\n尚未运行。" }
+        } catch { status += "\n上次状态无法读取（state_unreadable），现有文件未改动。" }
+        if !DictionaryAutoUpdateService.hasConfiguredProvider(ConfigService.shared.rawDict) {
+            status += "\n未配置可用的润色模型，自动扫描暂停；已验证候选仍可在空闲时写入。"
+        }
+        label.stringValue = status
+    }
+
+    @objc private func automaticUpdateToggled(_ sender: NSButton) {
+        if !ConfigService.shared.write(key: "dictionaryAutoUpdateEnabled", value: sender.state == .on) {
+            sender.state = ConfigService.shared.dictionaryAutoUpdateEnabled ? .on : .off
+        }
+        refreshAutomaticUpdateStatus(nil)
     }
 
     // MARK: - Terms Actions
@@ -394,23 +439,9 @@ final class DictionarySettingsVC: NSObject {
     }
 
     private static func parseSuggestions(_ raw: String) -> [Suggestion] {
-        // Strip common code-fence wrappers defensively.
-        var s = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-        if s.hasPrefix("```") {
-            if let firstNewline = s.firstIndex(of: "\n") {
-                s = String(s[s.index(after: firstNewline)...])
-            }
-            if let fenceEnd = s.range(of: "```", options: .backwards) {
-                s = String(s[..<fenceEnd.lowerBound])
-            }
-            s = s.trimmingCharacters(in: .whitespacesAndNewlines)
-        }
-
-        guard let data = s.data(using: .utf8),
+        guard let data = try? JSONResponseParser.data(from: raw),
               let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
-              let arr = obj["suggestions"] as? [[String: Any]] else {
-            return []
-        }
+              let arr = obj["suggestions"] as? [[String: Any]] else { return [] }
 
         return arr.compactMap { item in
             guard let wrong = item["wrong"] as? String, !wrong.isEmpty,

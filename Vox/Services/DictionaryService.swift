@@ -1,119 +1,97 @@
 import Foundation
 
-/// Loads user-defined proper-noun vocabulary from ~/.vox/dictionary.json.
-/// File format: JSON array of strings, e.g. ["Claude", "红杉", "MiniMax"].
-/// Injected into Qwen ASR system context (layer 1) and LLM system prompt (layer 2)
-/// to reduce recognition errors on high-frequency proper nouns.
+/// The on-disk array remains authoritative. Unknown array entries are retained when
+/// editing known string terms, and malformed files are never replaced by an empty list.
 final class DictionaryService {
     static let shared = DictionaryService()
+    private let directory: URL
+    private let lock = NSRecursiveLock()
+    private var storedLastError: String?
+    private(set) var lastError: String? {
+        get { lock.lock(); defer { lock.unlock() }; return storedLastError }
+        set { lock.lock(); defer { lock.unlock() }; storedLastError = newValue }
+    }
+    var dictPath: String { directory.appendingPathComponent("dictionary.json").path }
 
-    private let log = LogService.shared
-    private let dictDir = NSHomeDirectory() + "/.vox"
-    var dictPath: String { dictDir + "/dictionary.json" }
-
-    private static let seedContent = """
-    [
-      "Claude",
-      "红杉",
-      "Sequoia",
-      "MiniMax",
-      "Term Sheet",
-      "Cap Table",
-      "LLM",
-      "ARR",
-      "MRR"
-    ]
-    """
-
-    private init() {
-        ensureFileExists()
+    private static let seedContent = ["Claude", "红杉", "Sequoia", "MiniMax", "Term Sheet", "Cap Table", "LLM", "ARR", "MRR"]
+    private convenience init() { self.init(directory: NSHomeDirectory() + "/.vox") }
+    init(directory: String, seedIfMissing: Bool = true) {
+        self.directory = URL(fileURLWithPath: directory)
+        if seedIfMissing && !FileManager.default.fileExists(atPath: dictPath) {
+            do {
+                try FileManager.default.createDirectory(at: self.directory, withIntermediateDirectories: true)
+                try JSONBackupStore.atomicWrite(JSONSerialization.data(withJSONObject: Self.seedContent, options: [.prettyPrinted]), to: URL(fileURLWithPath: dictPath))
+            } catch { lastError = "Could not create dictionary.json." }
+        }
     }
 
-    /// Reads the dictionary file fresh every call — cheap (<1KB) and keeps manual edits
-    /// taking effect without needing a reload trigger.
+    private func readDocument() throws -> (Data, [Any]) {
+        let data = try Data(contentsOf: URL(fileURLWithPath: dictPath))
+        guard let rows = try JSONSerialization.jsonObject(with: data) as? [Any] else { throw CocoaError(.fileReadCorruptFile) }
+        return (data, rows)
+    }
+
+    /// Throwing read lets unattended updates distinguish an empty dictionary from corruption.
+    func readTerms() throws -> [String] {
+        lock.lock(); defer { lock.unlock() }
+        return try readDocument().1.compactMap { $0 as? String }.map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }.filter { !$0.isEmpty }
+    }
     var terms: [String] {
-        guard let data = FileManager.default.contents(atPath: dictPath),
-              let arr = try? JSONSerialization.jsonObject(with: data) as? [String] else {
-            return []
-        }
-        return arr
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
+        do { return try readTerms() }
+        catch { lastError = "dictionary.json is unreadable or malformed; its bytes were preserved."; return [] }
     }
+    var formatted: String { terms.joined(separator: ", ") }
 
-    /// Comma-joined string ready to append to a prompt. Empty when no terms.
-    var formatted: String {
-        terms.joined(separator: ", ")
-    }
-
-    // MARK: - Mutations
-
-    /// Returns true if the term was added; false if empty or already present (case-insensitive).
-    @discardableResult
-    func addTerm(_ term: String) -> Bool {
-        let trimmed = term.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.isEmpty else { return false }
-        var current = terms
-        if current.contains(where: { $0.caseInsensitiveCompare(trimmed) == .orderedSame }) {
-            return false
-        }
-        current.append(trimmed)
-        writeTerms(current)
+    private func mutate(_ transform: (inout [Any]) -> Bool) throws -> Bool {
+        lock.lock(); defer { lock.unlock() }
+        let (original, document) = try readDocument()
+        var rows = document
+        guard transform(&rows) else { return false }
+        let url = URL(fileURLWithPath: dictPath)
+        let data = try JSONSerialization.data(withJSONObject: rows, options: [.prettyPrinted, .sortedKeys])
+        guard try Data(contentsOf: url) == original else { throw CocoaError(.fileWriteUnknown) }
+        try JSONBackupStore.backup(original, directory: directory, prefix: "dictionary-backup-")
+        guard try Data(contentsOf: url) == original else { throw CocoaError(.fileWriteUnknown) }
+        try JSONBackupStore.atomicWrite(data, to: url)
+        lastError = nil
         return true
     }
 
-    /// Add multiple terms at once; returns count actually added (after dedup).
-    @discardableResult
-    func addTerms(_ incoming: [String]) -> Int {
-        var current = terms
-        var added = 0
-        for raw in incoming {
-            let t = raw.trimmingCharacters(in: .whitespacesAndNewlines)
-            guard !t.isEmpty else { continue }
-            if current.contains(where: { $0.caseInsensitiveCompare(t) == .orderedSame }) { continue }
-            current.append(t)
-            added += 1
+    @discardableResult func addTermsSafely(_ incoming: [String]) throws -> [String] {
+        var added: [String] = []
+        _ = try mutate { rows in
+            var existing = rows.compactMap { $0 as? String }
+            for raw in incoming {
+                let term = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+                guard !term.isEmpty, !existing.contains(where: { $0.caseInsensitiveCompare(term) == .orderedSame }) else { continue }
+                existing.append(term); rows.append(term); added.append(term)
+            }
+            return !added.isEmpty
         }
-        if added > 0 { writeTerms(current) }
         return added
     }
-
+    @discardableResult func addTerm(_ term: String) -> Bool { addTerms([term]) == 1 }
+    @discardableResult func addTerms(_ incoming: [String]) -> Int {
+        do { return try addTermsSafely(incoming).count }
+        catch { lastError = "Cannot save dictionary.json. Check its JSON and permissions; existing bytes were preserved."; return 0 }
+    }
     func removeTerm(at index: Int) {
-        var current = terms
-        guard index >= 0 && index < current.count else { return }
-        current.remove(at: index)
-        writeTerms(current)
-    }
-
-    /// Updates the term at index; returns false on dedupe conflict or empty.
-    @discardableResult
-    func updateTerm(at index: Int, to newValue: String) -> Bool {
-        let trimmed = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
-        var current = terms
-        guard !trimmed.isEmpty, index >= 0 && index < current.count else { return false }
-        if current.enumerated().contains(where: { $0.offset != index && $0.element.caseInsensitiveCompare(trimmed) == .orderedSame }) {
-            return false
-        }
-        current[index] = trimmed
-        writeTerms(current)
-        return true
-    }
-
-    private func writeTerms(_ list: [String]) {
         do {
-            try FileManager.default.createDirectory(atPath: dictDir, withIntermediateDirectories: true)
-            let data = try JSONSerialization.data(withJSONObject: list, options: [.prettyPrinted])
-            try data.write(to: URL(fileURLWithPath: dictPath), options: .atomic)
-        } catch {
-            log.debug("DictionaryService write failed: \(error.localizedDescription)")
-        }
+            _ = try mutate { rows in
+                let indices = rows.indices.filter { index in (rows[index] as? String).map { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty } ?? false }
+                guard indices.indices.contains(index) else { return false }
+                rows.remove(at: indices[index]); return true
+            }
+        } catch { lastError = "Cannot save dictionary.json; existing bytes were preserved." }
     }
-
-    /// Seed an example file on first run so users have something to edit.
-    private func ensureFileExists() {
-        if FileManager.default.fileExists(atPath: dictPath) { return }
-        try? FileManager.default.createDirectory(atPath: dictDir, withIntermediateDirectories: true)
-        try? DictionaryService.seedContent.write(toFile: dictPath, atomically: true, encoding: .utf8)
-        log.debug("Seeded dictionary.json at \(dictPath)")
+    @discardableResult func updateTerm(at index: Int, to newValue: String) -> Bool {
+        do {
+            return try mutate { rows in
+                let value = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                let indices = rows.indices.filter { index in (rows[index] as? String).map { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty } ?? false }
+                guard !value.isEmpty, indices.indices.contains(index), !indices.enumerated().contains(where: { $0.offset != index && (rows[$0.element] as! String).caseInsensitiveCompare(value) == .orderedSame }) else { return false }
+                rows[indices[index]] = value; return true
+            }
+        } catch { lastError = "Cannot save dictionary.json; existing bytes were preserved."; return false }
     }
 }

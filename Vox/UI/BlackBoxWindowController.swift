@@ -156,57 +156,10 @@ class BlackBoxWindowController: NSObject, NSWindowDelegate, NSTableViewDataSourc
         sender.contentTintColor = .systemOrange
         sender.isEnabled = false
 
-        Task {
-            let appContext = ContextService.shared.detect()
-            let contextHint = ContextService.shared.contextHint(for: appContext)
-            let isTranslate = AppDelegate.shared.translateMode
-
-            NSLog("Vox: Black Box reprocessing \(backup.url.lastPathComponent)")
-            let rawText = await STTService.shared.transcribe(audioFile: backup.url)
-
-            guard !rawText.isEmpty else {
-                await MainActor.run {
-                    sender.image = origImage
-                    sender.contentTintColor = origTint
-                    sender.isEnabled = true
-                    AppDelegate.showNotification(title: "Black Box", message: "Could not recognize speech from this recording.")
-                }
-                return
-            }
-
-            let cleanText = await LLMService.shared.process(rawText: rawText, contextHint: contextHint, translateMode: isTranslate, requireLLM: isTranslate, applyAliases: !isTranslate)
-            if isTranslate && cleanText.isEmpty {
-                await MainActor.run {
-                    sender.image = origImage
-                    sender.contentTintColor = origTint
-                    sender.isEnabled = true
-                    AppDelegate.showNotification(title: "Black Box", message: "Translation failed. No text was pasted.")
-                }
-                return
-            }
-            let finalText = cleanText.isEmpty ? rawText : cleanText
-
-            await MainActor.run {
-                PasteService.shared.paste(text: finalText)
-
-                // Save to history
-                if isTranslate {
-                    HistoryService.shared.addRecord(text: finalText, originalText: rawText, isTranslation: true)
-                } else {
-                    HistoryService.shared.addRecord(text: finalText)
-                }
-
-                // Success feedback
-                sender.image = NSImage(systemSymbolName: "checkmark.circle.fill", accessibilityDescription: nil)?.withSymbolConfiguration(config)
-                sender.contentTintColor = .systemGreen
-                NSSound(named: "Glass")?.play()
-
-                DispatchQueue.main.asyncAfter(deadline: .now() + 1.0) {
-                    sender.image = origImage
-                    sender.contentTintColor = origTint
-                    sender.isEnabled = true
-                }
-            }
+        AppDelegate.shared.reprocessAudio(at: backup.url) { success in
+            sender.image = success ? NSImage(systemSymbolName: "checkmark.circle.fill", accessibilityDescription: nil)?.withSymbolConfiguration(config) : origImage
+            sender.contentTintColor = success ? .systemGreen : origTint
+            sender.isEnabled = true
         }
     }
 

@@ -167,6 +167,9 @@ class LLMService {
 
     private let log = LogService.shared
     private let config = ConfigService.shared
+    private let providerOverride: LLMProvider?
+
+    init(providerOverride: LLMProvider? = nil) { self.providerOverride = providerOverride }
 
     // MARK: - Prompts
 
@@ -340,6 +343,7 @@ class LLMService {
     }
 
     private var provider: LLMProvider? {
+        if let injected = providerOverride { return injected }
         let cfg = config
         guard let providerName = cfg.llmProvider,
               let pc = cfg.llmProviderConfig(for: providerName) else {
@@ -414,7 +418,7 @@ class LLMService {
     ///   on `rawText` (deterministic ASR-homophone correction). Default false: callers
     ///   must explicitly opt in. Only the normal dictation path should pass true;
     ///   translate / edit / setup-test / custom-prompt paths must preserve user input.
-    func process(rawText: String, contextHint: String? = nil, translateMode: Bool = false, customSystemPrompt: String? = nil, requireLLM: Bool = false, applyAliases: Bool = false) async -> String {
+    func process(rawText: String, contextHint: String? = nil, translateMode: Bool = false, customSystemPrompt: String? = nil, requireLLM: Bool = false, applyAliases: Bool = false, onFailure: (() -> Void)? = nil) async -> String {
         // Pre-LLM alias substitution. Runs BEFORE provider guard so the
         // deterministic fix lands even when LLM is unconfigured or fails.
         let aliasedText: String
@@ -430,9 +434,10 @@ class LLMService {
         guard let p = provider else {
             if requireLLM {
                 log.debug("LLM required but not configured, aborting")
-                DispatchQueue.main.async {
+                if let onFailure = onFailure { onFailure() }
+                else { DispatchQueue.main.async {
                     AppDelegate.showNotification(title: "Vox", message: "LLM not configured. Operation cancelled.")
-                }
+                } }
                 return ""
             }
             log.debug("No LLM config, skipping post-processing")
@@ -448,18 +453,15 @@ class LLMService {
         let result = await p.complete(userMessage: aliasedText, systemPrompt: systemPrompt)
 
         if result.isEmpty {
-            if requireLLM {
-                log.debug("LLM failed in requireLLM mode, aborting")
-                DispatchQueue.main.async {
-                    AppDelegate.showNotification(title: "Vox", message: "LLM request failed. Operation cancelled.")
-                }
-                return ""
-            }
-            log.debug("LLM failed, returning aliased raw text")
-            DispatchQueue.main.async {
-                AppDelegate.showNotification(title: "Vox", message: "LLM post-processing failed. Using raw transcription.")
-            }
-            return aliasedText
+            // Recovery callers need the failure signal even when ordinary dictation
+            // keeps the existing deterministic fallback. Other callers retain notifications.
+            if let onFailure = onFailure { onFailure() }
+            else { DispatchQueue.main.async {
+                AppDelegate.showNotification(title: "Vox", message: requireLLM
+                    ? "LLM request failed. Operation cancelled."
+                    : "LLM post-processing failed. Using raw transcription.")
+            } }
+            return requireLLM ? "" : aliasedText
         }
         return result
     }

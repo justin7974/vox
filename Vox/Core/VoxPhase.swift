@@ -51,6 +51,8 @@ class VoxStateMachine {
         if case .error = to { return true }
 
         switch (from, to) {
+        case (.idle, .transcribing):           return true // backup recovery
+        case (.idle, .pasting):                return true // re-paste final text
         case (.idle, .recording):               return true
         case (.recording, .idle):               return true
         case (.recording, .transcribing):       return true

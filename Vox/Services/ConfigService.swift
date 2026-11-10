@@ -209,6 +209,12 @@ final class ConfigService: @unchecked Sendable {
         set { write(key: "historyRetentionDays", value: newValue) }
     }
 
+    /// Unattended vocabulary suggestions use the already configured LLM provider.
+    var dictionaryAutoUpdateEnabled: Bool {
+        get { raw["dictionaryAutoUpdateEnabled"] as? Bool ?? true }
+        set { write(key: "dictionaryAutoUpdateEnabled", value: newValue) }
+    }
+
     // MARK: - Keychain helpers
 
     /// Keychain-first lookup with legacy fallback to the JSON dict.

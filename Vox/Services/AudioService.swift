@@ -71,16 +71,23 @@ class AudioService {
         audioRecorder?.stop()
         audioRecorder = nil
         let url = currentURL
+        lastBackupURL = nil
         if backup, let url = url {
-            saveBackup(audioURL: url)
+            lastBackupURL = saveBackup(audioURL: url)
         }
+        currentURL = nil
         return url
     }
 
     // MARK: - Backup
 
     private let maxBackups = 5
-    private let backupDir = NSHomeDirectory() + "/.vox/audio"
+    private let backupDir: String
+    private(set) var lastBackupURL: URL?
+
+    init(backupDirectory: URL = URL(fileURLWithPath: NSHomeDirectory() + "/.vox/audio")) {
+        backupDir = backupDirectory.path
+    }
 
     struct Backup: Comparable {
         let url: URL
@@ -122,6 +129,7 @@ class AudioService {
             .compactMap { filename -> Backup? in
                 let path = "\(backupDir)/\(filename)"
                 guard let attrs = try? fm.attributesOfItem(atPath: path),
+                      attrs[.type] as? FileAttributeType == .typeRegular,
                       let size = attrs[.size] as? Int,
                       let modified = attrs[.modificationDate] as? Date else { return nil }
                 let duration = max(1, size / 32000)

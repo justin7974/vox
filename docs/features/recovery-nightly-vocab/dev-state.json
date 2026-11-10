@@ -1,0 +1,30 @@
+{
+  "project": "voice-input/recovery-nightly-vocab",
+  "phase": "review",
+  "tasks": [
+    {
+      "step": 1,
+      "status": "done",
+      "desc": "isolate baseline"
+    },
+    {
+      "step": 2,
+      "status": "done",
+      "desc": "recovery and regression"
+    },
+    {
+      "step": 3,
+      "status": "done",
+      "desc": "nightly vocabulary and integration"
+    },
+    {
+      "step": 4,
+      "status": "done",
+      "desc": "tests, compile and independent review"
+    }
+  ],
+  "reviewAttempts": 2,
+  "createdAt": "2026-11-10T07:30:00Z",
+  "updatedAt": "2026-11-10T08:09:26.957259+00:00",
+  "revision": "r3 clock-retention repair authorized GA4dddb6ce"
+}
