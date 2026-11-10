@@ -11,3 +11,5 @@ swiftc scripts/task321/BaselineCompatible.swift scripts/task321/TestDoubles.swif
 "$TEST_TMP/compatible"
 swiftc scripts/task321/R2Boundaries.swift scripts/task321/TestDoubles.swift Vox/Services/{ConfigService,STTService,ProcessRunner,JSONBackupStore}.swift -framework Cocoa -framework AVFoundation -o "$TEST_TMP/r2-boundaries"
 "$TEST_TMP/r2-boundaries"
+swiftc scripts/task321/BackupCleanupFailure.swift scripts/task321/TestDoubles.swift Vox/Services/{ConfigService,STTService,ProcessRunner,JSONBackupStore}.swift -framework Cocoa -framework AVFoundation -o "$TEST_TMP/backup-cleanup"
+"$TEST_TMP/backup-cleanup"

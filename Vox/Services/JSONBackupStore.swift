@@ -22,20 +22,24 @@ enum JSONBackupStore {
         let data = try JSONSerialization.data(withJSONObject: redacted(object), options: [.prettyPrinted, .sortedKeys])
         let backup = directory.appendingPathComponent("\(prefix)\(UUID().uuidString).json")
         try atomicWrite(data, to: backup)
-        let files = try FileManager.default.contentsOfDirectory(at: directory,
-            includingPropertiesForKeys: [.contentModificationDateKey, .isRegularFileKey])
-            .filter { $0.lastPathComponent.hasPrefix(prefix) && $0.pathExtension == "json" && (try? $0.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true }
-            .sorted {
-                let a = (try? $0.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
-                let b = (try? $1.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
-                return a == b ? $0.lastPathComponent > $1.lastPathComponent : a > b
+        do {
+            let files = try FileManager.default.contentsOfDirectory(at: directory,
+                includingPropertiesForKeys: [.contentModificationDateKey, .isRegularFileKey])
+                .filter { $0.lastPathComponent.hasPrefix(prefix) && $0.pathExtension == "json" && (try? $0.resourceValues(forKeys: [.isRegularFileKey]).isRegularFile) == true }
+                .sorted {
+                    let a = (try? $0.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+                    let b = (try? $1.resourceValues(forKeys: [.contentModificationDateKey]).contentModificationDate) ?? .distantPast
+                    return a == b ? $0.lastPathComponent > $1.lastPathComponent : a > b
+                }
+            for old in files.dropFirst(retention) {
+                // Tests use only their own temporary directory; production deletions use Trash.
+                let temporaryRoot = FileManager.default.temporaryDirectory.resolvingSymlinksInPath().path + "/"
+                if old.resolvingSymlinksInPath().path.hasPrefix(temporaryRoot) {
+                    try FileManager.default.removeItem(at: old)
+                } else { try FileManager.default.trashItem(at: old, resultingItemURL: nil) }
             }
-        for old in files.dropFirst(retention) {
-            // Tests use only their own temporary directory; production deletions use Trash.
-            let temporaryRoot = FileManager.default.temporaryDirectory.resolvingSymlinksInPath().path + "/"
-            if old.resolvingSymlinksInPath().path.hasPrefix(temporaryRoot) {
-                try FileManager.default.removeItem(at: old)
-            } else { try FileManager.default.trashItem(at: old, resultingItemURL: nil) }
+        } catch {
+            NSLog("Vox: Backup cleanup failed: %@", error.localizedDescription)
         }
     }
 
