@@ -6,7 +6,6 @@ enum VoxPhase: Equatable {
     case transcribing
     case postProcessing
     case pasting
-    case editWindow
     case error(VoxError)
 
     static func == (lhs: VoxPhase, rhs: VoxPhase) -> Bool {
@@ -16,7 +15,6 @@ enum VoxPhase: Equatable {
         case (.transcribing, .transcribing): return true
         case (.postProcessing, .postProcessing): return true
         case (.pasting, .pasting): return true
-        case (.editWindow, .editWindow): return true
         case (.error, .error): return true
         default: return false
         }
@@ -49,9 +47,6 @@ class VoxStateMachine {
         case (.transcribing, .postProcessing):  return true
         case (.postProcessing, .pasting):       return true
         case (.pasting, .idle):                 return true
-        case (.pasting, .editWindow):           return true
-        case (.editWindow, .recording):         return true
-        case (.editWindow, .idle):              return true
         default:                                return false
         }
     }

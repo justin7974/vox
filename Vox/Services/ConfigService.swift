@@ -209,16 +209,6 @@ final class ConfigService: @unchecked Sendable {
         set { write(key: "historyRetentionDays", value: newValue) }
     }
 
-    // MARK: - Edit Window
-
-    var editWindowEnabled: Bool {
-        raw["editWindowEnabled"] as? Bool ?? true
-    }
-
-    var editWindowDuration: Double {
-        raw["editWindowDuration"] as? Double ?? 3.0
-    }
-
     // MARK: - Keychain helpers
 
     /// Keychain-first lookup with legacy fallback to the JSON dict.

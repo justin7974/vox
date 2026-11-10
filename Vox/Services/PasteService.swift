@@ -9,19 +9,13 @@ class PasteService {
     /// Transcription" works even for users with history disabled.
     private(set) var lastPastedText: String?
 
-    func paste(text: String, beforePaste: (() -> Bool)? = nil, completion: ((Bool) -> Void)? = nil) {
+    func paste(text: String, completion: ((Bool) -> Void)? = nil) {
         log.debug("paste called, length=\(text.count)")
 
         // Always use clipboard + Cmd+V — most universal method
         // AXValue looks good on paper but Electron apps (Claude, VS Code, Slack etc.)
         // report success while silently dropping the text
-        pasteViaClipboard(text: text, beforePaste: beforePaste, completion: completion)
-    }
-
-    // Identify only our synthetic paste events, never ignore the user's physical Cmd+V.
-    static let pasteEventMarker: Int64 = 0x564f585041535445
-    static func isOwnPasteEvent(_ event: NSEvent) -> Bool {
-        event.cgEvent?.getIntegerValueField(.eventSourceUserData) == pasteEventMarker
+        pasteViaClipboard(text: text, completion: completion)
     }
 
     // MARK: - Direct AXValue injection (unused, kept for reference)
@@ -77,10 +71,8 @@ class PasteService {
 
     // MARK: - Clipboard + Cmd+V via CGEvent
 
-    private func pasteViaClipboard(text: String, beforePaste: (() -> Bool)?, completion: ((Bool) -> Void)?) {
+    private func pasteViaClipboard(text: String, completion: ((Bool) -> Void)?) {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) { [self] in
-            // Revalidate on the main thread at dispatch time, after any focus/selection change.
-            guard beforePaste?() ?? true else { completion?(false); return }
             lastPastedText = text
             let pasteboard = NSPasteboard.general
             pasteboard.clearContents()
@@ -90,16 +82,11 @@ class PasteService {
                let up = CGEvent(keyboardEventSource: source, virtualKey: 9, keyDown: false) {
                 down.flags = .maskCommand
                 up.flags = .maskCommand
-                down.setIntegerValueField(.eventSourceUserData, value: Self.pasteEventMarker)
-                up.setIntegerValueField(.eventSourceUserData, value: Self.pasteEventMarker)
                 down.post(tap: .cghidEventTap)
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.02) {
                     up.post(tap: .cghidEventTap)
                     completion?(true)
                 } // dispatched, not proof that the target application consumed it
-            } else if beforePaste != nil {
-                // Do not spawn a delayed fallback for a replacement whose selection can go stale.
-                completion?(false)
             } else {
                 Task {
                     let result = await ProcessRunner.run(executable: "/usr/bin/osascript",

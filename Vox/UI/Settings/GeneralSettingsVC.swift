@@ -10,8 +10,6 @@ class GeneralSettingsVC: NSObject {
     // Controls
     private var dictationRecorder: HotkeyRecorderView!
     private var modeSegment: NSSegmentedControl!
-    private var editWindowSwitch: NSSwitch!
-    private var editDurationPopup: NSPopUpButton!
     private var accessibilityDot: NSView!
     private var micDot: NSView!
 
@@ -51,38 +49,6 @@ class GeneralSettingsVC: NSObject {
             label: "Recording Mode",
             sublabel: "Toggle: press once to start/stop. Hold: hold key to record",
             control: modeSegment
-        ))
-
-        stack.addArrangedSubview(SettingsUI.makeSeparator())
-
-        // ── QUICK EDIT ──
-        stack.addArrangedSubview(SettingsUI.makeSectionTitle("Quick Edit Window"))
-
-        editWindowSwitch = NSSwitch()
-        editWindowSwitch.state = config.editWindowEnabled ? .on : .off
-        editWindowSwitch.target = self
-        editWindowSwitch.action = #selector(editWindowToggled)
-        stack.addArrangedSubview(SettingsUI.makeFormRow(
-            label: "Show Edit Window",
-            sublabel: "Brief window to review/edit text before pasting",
-            control: editWindowSwitch
-        ))
-
-        editDurationPopup = NSPopUpButton()
-        editDurationPopup.addItems(withTitles: ["2 seconds", "3 seconds", "5 seconds", "10 seconds"])
-        let durations = [2.0, 3.0, 5.0, 10.0]
-        let currentDuration = config.editWindowDuration
-        if let idx = durations.firstIndex(of: currentDuration) {
-            editDurationPopup.selectItem(at: idx)
-        } else {
-            editDurationPopup.selectItem(at: 1) // default 3s
-        }
-        editDurationPopup.target = self
-        editDurationPopup.action = #selector(durationChanged)
-        editDurationPopup.widthAnchor.constraint(equalToConstant: 160).isActive = true
-        stack.addArrangedSubview(SettingsUI.makeFormRow(
-            label: "Duration",
-            control: editDurationPopup
         ))
 
         stack.addArrangedSubview(SettingsUI.makeSeparator())
@@ -156,18 +122,6 @@ class GeneralSettingsVC: NSObject {
         let mode = modeSegment.selectedSegment == 1 ? "hold" : "toggle"
         config.write(key: "hotkeyMode", value: mode)
         AppDelegate.shared?.reloadHotkey()
-    }
-
-    @objc private func editWindowToggled() {
-        config.write(key: "editWindowEnabled", value: editWindowSwitch.state == .on)
-    }
-
-    @objc private func durationChanged() {
-        let durations = [2.0, 3.0, 5.0, 10.0]
-        let idx = editDurationPopup.indexOfSelectedItem
-        if idx >= 0 && idx < durations.count {
-            config.write(key: "editWindowDuration", value: durations[idx])
-        }
     }
 
     @objc private func openSystemSettings() {

@@ -142,7 +142,6 @@ class SetupWindow: NSObject, NSWindowDelegate {
     private var historyEnabledCheckbox: NSButton?
     private var historyRetentionPopup: NSPopUpButton?
 
-    private var editWindowDurationPopup: NSPopUpButton?
     private var onComplete: (() -> Void)?
 
     // MARK: - Step sequence
@@ -1043,47 +1042,6 @@ class SetupWindow: NSObject, NSWindowDelegate {
         info.textColor = .tertiaryLabelColor
         cardStack.addArrangedSubview(info)
 
-        // Separator
-        let sep = NSBox()
-        sep.boxType = .separator
-        cardStack.addArrangedSubview(sep)
-
-        // Edit window duration
-        let editRow = NSStackView()
-        editRow.orientation = .horizontal
-        editRow.spacing = 12
-        editRow.alignment = .centerY
-
-        let editLabel = NSTextField(labelWithString: "Edit window after dictation:")
-        editLabel.font = .systemFont(ofSize: 15)
-        editLabel.textColor = .labelColor
-        editRow.addArrangedSubview(editLabel)
-
-        let editPopup = NSPopUpButton()
-        editPopup.addItems(withTitles: ["Off", "1 second", "3 seconds", "5 seconds"])
-        editPopup.font = .systemFont(ofSize: 13)
-
-        let currentDuration = ConfigService.shared.editWindowDuration
-        let currentEnabled = ConfigService.shared.editWindowEnabled
-        if !currentEnabled || currentDuration <= 0 {
-            editPopup.selectItem(at: 0)
-        } else if currentDuration <= 1.5 {
-            editPopup.selectItem(at: 1)
-        } else if currentDuration <= 4.0 {
-            editPopup.selectItem(at: 2)
-        } else {
-            editPopup.selectItem(at: 3)
-        }
-        editWindowDurationPopup = editPopup
-        editRow.addArrangedSubview(editPopup)
-
-        cardStack.addArrangedSubview(editRow)
-
-        let editInfo = NSTextField(wrappingLabelWithString: "After dictating, re-press the hotkey within the edit window\nto modify the text you just spoke (e.g., \"make it more formal\").")
-        editInfo.font = .systemFont(ofSize: 12)
-        editInfo.textColor = .tertiaryLabelColor
-        cardStack.addArrangedSubview(editInfo)
-
         stack.addArrangedSubview(card)
         card.widthAnchor.constraint(equalToConstant: 520).isActive = true
 
@@ -1105,18 +1063,6 @@ class SetupWindow: NSObject, NSWindowDelegate {
             NSLog("Vox: History settings saved — enabled, retention: \(days == 0 ? "forever" : "\(days) days")")
         }
 
-        // Save edit window duration
-        let ewIndex = editWindowDurationPopup?.indexOfSelectedItem ?? 2
-        let durationMap: [Int: (enabled: Bool, duration: Double)] = [
-            0: (false, 0),
-            1: (true, 1.0),
-            2: (true, 3.0),
-            3: (true, 5.0),
-        ]
-        let (enabled, duration) = durationMap[ewIndex] ?? (true, 3.0)
-        ConfigService.shared.write(key: "editWindowEnabled", value: enabled)
-        ConfigService.shared.write(key: "editWindowDuration", value: duration)
-        NSLog("Vox: Edit window: enabled=\(enabled), duration=\(duration)s")
     }
 
     // MARK: - Step: Complete
@@ -1346,18 +1292,12 @@ class SetupWindow: NSObject, NSWindowDelegate {
             ]
         }
 
-        // Preserve userContext and launcher settings from existing config
+        // Preserve userContext from existing config
         let configPath = NSHomeDirectory() + "/.vox/config.json"
         if let data = FileManager.default.contents(atPath: configPath),
            let existing = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
             if let ctx = existing["userContext"] as? String, !ctx.isEmpty {
                 config["userContext"] = ctx
-            }
-            if let ewe = existing["editWindowEnabled"] as? Bool {
-                config["editWindowEnabled"] = ewe
-            }
-            if let ewd = existing["editWindowDuration"] as? Double {
-                config["editWindowDuration"] = ewd
             }
         }
 

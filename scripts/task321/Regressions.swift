@@ -195,14 +195,6 @@ final class Chunks: STTProvider {
         check(kept == "1 2" && silenceFailures == 0, "silent last segment preserves preceding speech")
         check(silent.attempts["3"] == 1, "successful silence is not retried")
         check(QwenASRProvider.requestTimeout(audioBytes:5_700_000) > 180, "size-based timeout")
-        let anchor = InsertedTextRange(value:"开🙂结尾",selection:NSRange(location:3,length:0),insertedText:"中👨‍👩‍👧‍👦")!
-        check(anchor.range.location == 3 && anchor.range.length == "中👨‍👩‍👧‍👦".utf16.count, "UTF16 emoji range")
-        check(anchor.matches(value:"开🙂中👨‍👩‍👧‍👦结尾"), "middle insertion")
-        check(!anchor.matches(value:"开🙂中👨‍👩‍👧‍👦结尾x"), "drift rejected")
-        let unicode = InsertedTextRange(value:"",selection:NSRange(location:0,length:0),insertedText:"e\u{301}")!
-        check(!unicode.matches(value:"é"), "canonical equivalence with different UTF16 lengths fails safely")
-        let replaced = InsertedTextRange(value:"abcde",selection:NSRange(location:1,length:3),insertedText:"X")!
-        check(replaced.matches(value:"aXe"), "selected text replacement")
         check(STTService.filterHallucination("这是真实语音♪后半句必须保留") == "这是真实语音后半句必须保留", "music preserves text")
         check(WhisperLocalProvider.executionTimeout(audioDuration:3600) == 5520, "Whisper timeout scales with recording duration")
         check(WhisperLocalProvider.executionTimeout(audioDuration:100000) == 21600, "Whisper timeout bounded at six hours")
