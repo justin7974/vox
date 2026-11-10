@@ -1,7 +1,12 @@
 import Cocoa
 // Test-only services. No UI, microphone, API, input events, clipboard or Keychain.
 final class NSSound { init?(named: String) {}; func play() {} }
-final class LogService { static let shared = LogService(); func debug(_ text: String) {} }
+final class LogService {
+    static let shared = LogService()
+    static var errors: [String] = []
+    func debug(_ text: String) {}
+    func error(_ text: String) { Self.errors.append(text) }
+}
 final class ConfigService { static let shared = ConfigService(); var configExists = true }
 final class AudioService {
     static let shared = AudioService()
@@ -16,7 +21,12 @@ final class AudioService {
         return url
     }
 }
-final class STTService { static let shared = STTService(); func transcribe(audioFile: URL) async -> String { "fixture raw" } }
+final class STTService {
+    static let shared = STTService()
+    static var output = "fixture raw"
+    static var calls = 0
+    func transcribe(audioFile: URL) async -> String { Self.calls += 1; return Self.output }
+}
 final class LLMService {
     struct Call { let custom: String?; let translate: Bool; let required: Bool; let aliases: Bool }
     static let shared = LLMService()

@@ -8,6 +8,17 @@ enum VoxPhase: Equatable {
     case pasting
     case error(VoxError)
 
+    fileprivate var logName: String {
+        switch self {
+        case .idle: return "idle"
+        case .recording: return "recording"
+        case .transcribing: return "transcribing"
+        case .postProcessing: return "postProcessing"
+        case .pasting: return "pasting"
+        case .error: return "error"
+        }
+    }
+
     static func == (lhs: VoxPhase, rhs: VoxPhase) -> Bool {
         switch (lhs, rhs) {
         case (.idle, .idle): return true
@@ -27,10 +38,10 @@ class VoxStateMachine {
     @discardableResult
     func transition(to newPhase: VoxPhase) -> Bool {
         guard isValid(from: phase, to: newPhase) else {
-            NSLog("Vox: Invalid transition: \(phase) -> \(newPhase)")
+            LogService.shared.error("Invalid transition: \(phase.logName) -> \(newPhase.logName)")
             return false
         }
-        NSLog("Vox: Phase: \(phase) -> \(newPhase)")
+        NSLog("Vox: Phase: \(phase.logName) -> \(newPhase.logName)")
         phase = newPhase
         return true
     }
@@ -46,6 +57,7 @@ class VoxStateMachine {
         case (.transcribing, .idle):            return true
         case (.transcribing, .postProcessing):  return true
         case (.postProcessing, .pasting):       return true
+        case (.postProcessing, .idle):          return true
         case (.pasting, .idle):                 return true
         default:                                return false
         }

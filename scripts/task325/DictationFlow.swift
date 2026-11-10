@@ -11,6 +11,7 @@ import Cocoa
         HistoryService.records = []; LLMService.calls = []; LLMService.output = "fixture polished"
         LLMService.shared.isConfigured = true; AppDelegate.shared.translateMode = false
         AppDelegate.notifications = []; StatusOverlay.phases = []; AudioService.starts = 0
+        STTService.output = "fixture raw"; STTService.calls = 0; LogService.errors = []
     }
     @MainActor static func finish(_ c: DictationCoordinator, mode: String = "toggle") async {
         if mode == "hold" { c.hotkeyReleased(mode: mode) } else { c.hotkeyPressed(mode: mode) }
@@ -61,6 +62,20 @@ import Cocoa
         }
         check(LLMService.calls.count == 1, "failed translation reached LLM")
         check(PasteService.texts.isEmpty && HistoryService.records.isEmpty, "translation failure never pastes raw text or prompt")
+        failedTranslation.hotkeyPressed(mode: "toggle")
+        check(AudioService.starts == 2, "translation failure releases state for next recording")
+
+        reset()
+        STTService.output = ""
+        let failedRecognition = DictationCoordinator()
+        failedRecognition.hotkeyPressed(mode: "toggle"); failedRecognition.hotkeyPressed(mode: "toggle")
+        for _ in 0..<200 {
+            if STTService.calls > 0 && StatusOverlay.phases.last == .idle { break }
+            try? await Task.sleep(nanoseconds: 5_000_000)
+        }
+        check(PasteService.texts.isEmpty && HistoryService.records.isEmpty, "failed recognition never pastes")
+        failedRecognition.hotkeyPressed(mode: "toggle")
+        check(AudioService.starts == 2, "recognition failure releases state for next recording")
 
         reset()
         LLMService.output = ""
@@ -68,6 +83,13 @@ import Cocoa
         ordinaryFallback.hotkeyPressed(mode: "toggle"); await finish(ordinaryFallback)
         PasteService.complete(true)
         check(PasteService.texts == ["fixture raw"], "ordinary LLM failure retains raw fallback")
+        ordinaryFallback.hotkeyPressed(mode: "toggle")
+        check(AudioService.starts == 2, "ordinary polish fallback also releases state")
+        let machine = VoxStateMachine()
+        check(machine.transition(to: .error(.llmFailed("fixture-sensitive-error-details"))), "error state is reachable")
+        check(!machine.transition(to: .recording), "invalid transition is still rejected")
+        check(LogService.errors == ["Invalid transition: error -> recording"], "persisted error log contains only fixed state names")
+        check(machine.transition(to: .idle) && machine.transition(to: .recording), "error state can recover normally")
         print("PASS: \(checks) ordinary/translation coordinator checks; isolated doubles only")
     }
 }
